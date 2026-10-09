@@ -322,6 +322,23 @@ Icon: https://devinkoff.github.io/repo/CydiaIcon.png
 Name: DuoBoard
 
 Package: com.devink.duoboard
+Version: 0.15.0
+Architecture: iphoneos-arm64
+Maintainer: DEVINK
+Installed-Size: 708
+Depends: mobilesubstrate (>= 0.9.5000), preferenceloader, firmware (>= 15.0)
+Filename: debs/com.devink.duoboard_0.15.0_iphoneos-arm64.deb
+Size: 103670
+MD5sum: da7835092bbc024acaa5f5d36ca805fc
+SHA1: 58be32a90f512fbf3e66c3b2304a5568661770ad
+SHA256: e4c7025d9499fa3f7e99541655f28accee01ed873c435a44d8bc9cc27b6d9025
+Section: Tweaks
+Description: iPhone Duo-style iPad home screen: circular status ring, widget column, compact icon grid and a vertical dock.
+Author: DEVINK
+Icon: https://devinkoff.github.io/repo/CydiaIcon.png
+Name: DuoBoard
+
+Package: com.devink.duoboard
 Version: 0.3.0
 Architecture: iphoneos-arm64
 Maintainer: DEVINK
