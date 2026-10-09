@@ -7,10 +7,10 @@ Architectures: iphoneos-arm64
 Components: main
 Description: DuoBoard and other tweaks by DEVINK
 MD5Sum:
- 29292373c6469f580aaa936adce26bda 21344 Packages
- 9285dfde1ad5fc9129fd25d77be39a3f 3808 Packages.gz
- 17093f2bf0e8dccd401b8110b74197eb 3782 Packages.bz2
+ eec2a8a42526a1bc3dc778b1ef1f3914 21992 Packages
+ 73f8e662f22f47ff75786d226b0297e5 3911 Packages.gz
+ fe48989a304224ec168dba07e436530b 3843 Packages.bz2
 SHA256:
- 52cee00a8a1cef0275252ae6cf60c1614a7513c20237471c77ad1b359af1dbcf 21344 Packages
- c36661ee17ff2ff858e8a8bf69b5b1c854e91161d5e576c1a5dcb98bd3c6b6c6 3808 Packages.gz
- 80bc8b0440bd62adeb2854663a110acb466fa6b52609a0ab66eb3fce0f9b914c 3782 Packages.bz2
+ c8f11345001b6084373139706b469f9ba51c63c611bb0bc0aa83b78ad56ff795 21992 Packages
+ 9bed33d3b7a8ea5582aad818d578a4bf4f05568f5509f1ce5ebd69561006efee 3911 Packages.gz
+ a337370e9814d4d7ab0d43a20181bfb8289a7ca11434fd8572cd590ed0054359 3843 Packages.bz2
