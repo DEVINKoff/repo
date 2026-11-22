@@ -203,6 +203,7 @@ struct LyricsView: View {
     @Environment(Player.self) private var player
     @Environment(Lyrics.self) private var lyrics
     @State private var userScrolledAt = Date.distantPast
+    @State private var current: Int?
 
     var body: some View {
         Group {
@@ -237,47 +238,92 @@ struct LyricsView: View {
     }
 
     private func synced(_ lines: [Lyrics.Line]) -> some View {
-        let current = Lyrics.current(lines, at: player.position)
-        return ScrollViewReader { proxy in
+        ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 22) {
+                // a plain VStack: every line keeps one measured height, so nothing shifts while the lyrics scroll
+                VStack(alignment: .leading, spacing: 22) {
                     Color.clear.frame(height: 40)
                     ForEach(lines) { line in
-                        let isNow = line.id == current
-                        let passed = (current ?? -1) > line.id
-                        Group {
-                            if isNow && !line.words.isEmpty {
-                                SungLine(line: line)
-                            } else {
-                                Text(line.text.isEmpty ? "♪" : line.text)
-                                    .font(LyricsStyle.font)
-                                    .foregroundStyle(.white.opacity(passed ? 0.28 : 0.38))
-                                    .blur(radius: abs(line.id - (current ?? line.id)) > 2 ? 1.2 : 0.4)
-                            }
-                        }
-                        .scaleEffect(isNow ? 1 : 0.94, anchor: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture { player.seek(max(0, line.time - 0.05)) }
-                        .id(line.id)
-                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: isNow)
+                        LyricLine(line: line, isNow: line.id == current, passed: (current ?? -1) > line.id,
+                                  far: abs(line.id - (current ?? line.id)) > 2)
+                            .equatable()
+                            .onTapGesture { player.seek(max(0, line.time - 0.05)) }
+                            .id(line.id)
                     }
                     Color.clear.frame(height: 220)
                 }
             }
             .scrollIndicators(.hidden)
+            .background { LyricsClock(lines: lines, current: $current) }
             .simultaneousGesture(DragGesture(minimumDistance: 6).onChanged { _ in userScrolledAt = Date() })
-            .onChange(of: current) { _, now in
+            .onChange(of: current) { old, now in
                 guard let now, Date().timeIntervalSince(userScrolledAt) > 3 else { return }
-                withAnimation(.spring(response: 0.7, dampingFraction: 0.86)) { proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3)) }
+                if old == nil {
+                    proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3))
+                } else {
+                    withAnimation(.spring(response: 0.65, dampingFraction: 0.9)) { proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3)) }
+                }
             }
-            .onAppear { if let current { proxy.scrollTo(current, anchor: UnitPoint(x: 0, y: 0.3)) } }
+            .onChange(of: lyrics.state) { current = nil }
         }
+    }
+}
+
+/// Reads the playback position (the only view of the lyrics that redraws on every tick) and moves `current`.
+private struct LyricsClock: View {
+    let lines: [Lyrics.Line]
+    @Binding var current: Int?
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        let now = Lyrics.current(lines, at: player.position)
+        Color.clear.onChange(of: now, initial: true) { _, v in
+            if current != v { current = v }
+        }
+    }
+}
+
+/// One line of synced lyrics. Its words are laid out the same way whether it plays or not (only the colour and the
+/// light change), so a line never reflows — or makes the lines below jump — when it starts.
+struct LyricLine: View, Equatable {
+    let line: Lyrics.Line
+    let isNow: Bool
+    let passed: Bool
+    let far: Bool
+
+    static func == (a: LyricLine, b: LyricLine) -> Bool {
+        a.line.id == b.line.id && a.isNow == b.isNow && a.passed == b.passed && a.far == b.far
+    }
+
+    var body: some View {
+        Group {
+            if line.words.isEmpty {
+                Text(line.text.isEmpty ? "♪" : line.text)
+                    .font(LyricsStyle.font)
+                    .foregroundStyle(.white.opacity(isNow ? 1 : passed ? 0.28 : 0.38))
+            } else if isNow {
+                SungLine(line: line)
+            } else {
+                FlowLayout(spacing: LyricsStyle.wordSpacing, lineSpacing: LyricsStyle.lineSpacing) {
+                    ForEach(Array(line.words.enumerated()), id: \.offset) { _, w in
+                        Text(w.text).font(LyricsStyle.font)
+                    }
+                }
+                .foregroundStyle(.white.opacity(passed ? 0.28 : 0.38))
+            }
+        }
+        .blur(radius: isNow ? 0 : far ? 1.4 : 0.5)
+        .scaleEffect(isNow ? 1 : 0.95, anchor: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: isNow)
     }
 }
 
 enum LyricsStyle {
     static let font = Font.system(size: 30, weight: .heavy)
+    static let wordSpacing: CGFloat = 9
+    static let lineSpacing: CGFloat = 4
 }
 
 /// The playing line: each word fills with light as it is sung, lifts a little and glows; sung words stay lit.
@@ -288,7 +334,7 @@ struct SungLine: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 60, paused: !player.isPlaying)) { _ in
             let t = player.liveTime
-            FlowLayout(spacing: 9, lineSpacing: 4) {
+            FlowLayout(spacing: LyricsStyle.wordSpacing, lineSpacing: LyricsStyle.lineSpacing) {
                 ForEach(Array(line.words.enumerated()), id: \.offset) { _, w in
                     SungWord(word: w.text, progress: w.end > w.start ? min(1, max(0, (t - w.start) / (w.end - w.start))) : (t >= w.start ? 1 : 0))
                 }

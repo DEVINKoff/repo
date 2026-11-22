@@ -1,23 +1,46 @@
 import SwiftUI
+import ImageIO
 import UIKit
 
 /// Covers through the shared session (the Hub's `/api/nd/cover/…` needs its cookie).
 final class ImageCache: @unchecked Sendable {
     static let shared = ImageCache()
-    private let cache = NSCache<NSURL, UIImage>()
+    private let cache = NSCache<NSString, UIImage>()
 
-    init() { cache.countLimit = 400 }
+    init() {
+        cache.countLimit = 500
+        cache.totalCostLimit = 120 * 1024 * 1024
+    }
 
-    func cached(_ url: URL) -> UIImage? { cache.object(forKey: url as NSURL) }
+    /// Images are kept per size bucket: a list row never decodes (or holds) the 1200-px original.
+    private func key(_ url: URL, _ px: Int?) -> NSString { "\(url.absoluteString)#\(px ?? 0)" as NSString }
 
-    func image(_ url: URL) async -> UIImage? {
-        if let hit = cached(url) { return hit }
+    static func bucket(_ px: CGFloat?) -> Int? {
+        guard let px, px.isFinite, px > 0 else { return nil }
+        return min(2400, Int((px / 128).rounded(.up)) * 128)
+    }
+
+    func cached(_ url: URL, px: Int? = nil) -> UIImage? { cache.object(forKey: key(url, px)) }
+
+    func image(_ url: URL, px: Int? = nil) async -> UIImage? {
+        if let hit = cached(url, px: px) { return hit }
         guard let result = try? await HubClient.shared.session.data(from: url),
               ((result.1 as? HTTPURLResponse)?.statusCode ?? 200) < 300,
-              let image = UIImage(data: result.0) else { return nil }
-        let prepared = await image.byPreparingForDisplay() ?? image
-        cache.setObject(prepared, forKey: url as NSURL)
-        return prepared
+              let image = Self.decode(result.0, px: px) else { return nil }
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        cache.setObject(image, forKey: key(url, px), cost: cost)
+        return image
+    }
+
+    /// Decoded off the main thread, straight to the needed size (ImageIO thumbnail), ready to draw.
+    private static func decode(_ data: Data, px: Int?) -> UIImage? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        var opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                     kCGImageSourceCreateThumbnailWithTransform: true,
+                                     kCGImageSourceShouldCacheImmediately: true]
+        if let px { opts[kCGImageSourceThumbnailMaxPixelSize] = px } else { opts[kCGImageSourceThumbnailMaxPixelSize] = 2400 }
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return UIImage(data: data) }
+        return UIImage(cgImage: cg)
     }
 }
 
@@ -30,8 +53,13 @@ struct Cover: View {
     var symbol = "music.note"
     /// tried when `url` gives no image (a high-res variant the source doesn't have)
     var fallback: String? = nil
+    /// decode at this many pixels instead of the on-screen size (a blurred backdrop needs very few)
+    var pixels: CGFloat? = nil
 
     @State private var image: UIImage?
+    @Environment(\.displayScale) private var scale
+
+    private var px: Int? { ImageCache.bucket(pixels ?? size.map { $0 * scale }) }
 
     private var resolved: URL? { HubClient.shared.absolute(url) }
 
@@ -51,10 +79,10 @@ struct Cover: View {
         .clipShape(round ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: corner, style: .continuous)))
         .task(id: url) {
             guard let u = resolved else { image = nil; return }
-            if let hit = ImageCache.shared.cached(u) { image = hit; return }
+            if let hit = ImageCache.shared.cached(u, px: px) { image = hit; return }
             // keep showing the previous image until the new one is ready (no flash between tracks)
-            var loaded = await ImageCache.shared.image(u)
-            if loaded == nil, let f = HubClient.shared.absolute(fallback) { loaded = await ImageCache.shared.image(f) }
+            var loaded = await ImageCache.shared.image(u, px: px)
+            if loaded == nil, let f = HubClient.shared.absolute(fallback) { loaded = await ImageCache.shared.image(f, px: px) }
             if let loaded { withAnimation(.easeOut(duration: 0.2)) { image = loaded } }
         }
     }

@@ -23,18 +23,22 @@ struct PlayerView: View {
                         ZStack {
                             switch mode {
                             case .cover:
-                                Cover(url: HiRes.cover(t.coverUrl ?? t.coverSmallUrl, size: 900), size: art, corner: 26,
-                                      fallback: t.coverUrl ?? t.coverSmallUrl)
-                                    .shadow(color: .black.opacity(0.5), radius: 30, y: 18)
-                                    .scaleEffect(player.isPlaying ? 1 : 0.9)
-                                    .animation(.spring(response: 0.55, dampingFraction: 0.72), value: player.isPlaying)
-                                    .id(t.uid)
-                                    .transition(.asymmetric(insertion: .scale(scale: 0.85).combined(with: .opacity),
-                                                            removal: .scale(scale: 1.05).combined(with: .opacity)))
+                                ZStack {
+                                    Cover(url: HiRes.cover(t.coverUrl ?? t.coverSmallUrl, size: 900), size: art, corner: 26,
+                                          fallback: t.coverUrl ?? t.coverSmallUrl)
+                                    MotionCover(track: t, size: art, corner: 26, playing: player.isPlaying)
+                                }
+                                .shadow(color: .black.opacity(0.5), radius: player.isPlaying ? 34 : 18, y: player.isPlaying ? 20 : 10)
+                                .scaleEffect(player.isPlaying ? 1 : 0.88)
+                                .animation(.spring(response: 0.55, dampingFraction: 0.68), value: player.isPlaying)
+                                .id(t.uid)
+                                .transition(.asymmetric(insertion: .scale(scale: 0.8).combined(with: .blurFade),
+                                                        removal: .scale(scale: 1.08).combined(with: .blurFade)))
                             case .lyrics:
-                                LyricsView().padding(.horizontal, 4).transition(.opacity)
+                                LyricsView().padding(.horizontal, 4)
+                                    .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade), removal: .blurFade))
                             case .queue:
-                                QueueView().transition(.opacity)
+                                QueueView().transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade), removal: .blurFade))
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -116,12 +120,12 @@ struct PlayerView: View {
         return HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(t.title).font(.display(22, .bold)).lineLimit(1)
-                Text(t.artist).font(.body.weight(.medium)).opacity(0.6).lineLimit(1)
-                    .onTapGesture { openArtist(t) }
+                artistButton(t, font: .body.weight(.medium))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .id(t.uid)
-            .transition(.opacity.combined(with: .move(edge: .leading)))
+            .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .blurFade),
+                                    removal: .move(edge: .leading).combined(with: .blurFade)))
             likeButton(t, liked)
         }
     }
@@ -129,11 +133,18 @@ struct PlayerView: View {
     /// Title line above the controls while the lyrics or the queue take the middle.
     private func compactTitle(_ t: QueueTrack) -> some View {
         HStack(spacing: 12) {
-            Cover(url: t.coverSmallUrl ?? t.coverUrl, size: 48, corner: 10)
+            // a tap on the small cover (or the title) brings the big cover back
+            Button { mode = .cover } label: {
+                Cover(url: t.coverSmallUrl ?? t.coverUrl, size: 48, corner: 10)
+            }
+            .buttonStyle(.pressable)
             VStack(alignment: .leading, spacing: 2) {
                 Text(t.title).font(.headline).lineLimit(1)
-                Text(t.artist).font(.subheadline).opacity(0.6).lineLimit(1)
+                    .onTapGesture { mode = .cover }
+                artistButton(t, font: .subheadline)
             }
+            .id(t.uid)
+            .transition(.blurFade)
             Spacer()
             likeButton(t, stars.isLiked(.track(t)))
         }
@@ -148,14 +159,43 @@ struct PlayerView: View {
                 .symbolEffect(.bounce, value: liked)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 44, height: 44)
+                .background { LikeBurst(on: liked) }
         }
         .buttonStyle(.plain)
         .glassCircle()
         .sensoryFeedback(.impact(weight: .light), trigger: liked)
     }
 
+    /// The artist's name: a tap opens the artist (the player closes).
+    private func artistButton(_ t: QueueTrack, font: Font) -> some View {
+        Button { openArtist(t) } label: {
+            HStack(spacing: 3) {
+                Text(t.artist).lineLimit(1)
+                Image(systemName: "chevron.right").font(.caption2.weight(.bold)).opacity(0.6)
+            }
+            .font(font)
+            .opacity(0.65)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.pressable)
+    }
+
     private func openArtist(_ t: QueueTrack) {
-        if let a = t.artistRef ?? t.artists?.first(where: { $0.ref != nil })?.ref { Router.shared.go(.catalogArtist(a)) }
+        if let a = t.artistRef ?? t.artists?.first(where: { $0.ref != nil })?.ref {
+            Router.shared.go(.catalogArtist(a))
+            return
+        }
+        // a library or file track carries no catalog ref: find the artist by name
+        let name = t.artists?.first?.name ?? t.artist.components(separatedBy: ",").first ?? t.artist
+        Task {
+            guard let res = try? await HubClient.shared.search(name), !res.artists.isEmpty else {
+                Toasts.info("Исполнитель «\(name)» не найден в каталоге")
+                return
+            }
+            let who = Norm.key(name)
+            let a = res.artists.first { Norm.key($0.name) == who } ?? res.artists[0]
+            Router.shared.go(.catalogArtist(a.ref))
+        }
     }
 
     /// ✨ the smart shuffle's line with «+» / «−», or the error; empty otherwise (a still layout).
@@ -240,6 +280,7 @@ struct PlayerView: View {
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(on ? Theme.accent : .white.opacity(0.55))
                 .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.bounce, value: on)
                 .frame(width: 44, height: 44)
         }
         .buttonStyle(.pressable)
@@ -305,7 +346,7 @@ struct PlayerBackground: View {
         GeometryReader { g in
             ZStack(alignment: .top) {
                 Color(red: 0.035, green: 0.035, blue: 0.05)
-                Cover(url: url, size: g.size.width, corner: 0)
+                Cover(url: url, size: g.size.width, corner: 0, pixels: 160)
                     .frame(width: g.size.width, height: g.size.width)
                     .blur(radius: 80, opaque: true)
                     .saturation(1.6)
@@ -319,5 +360,35 @@ struct PlayerBackground: View {
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
+    }
+}
+
+
+/// A ring and a few sparks fly out of the heart when a track is liked.
+struct LikeBurst: View {
+    let on: Bool
+    @State private var shot = false
+
+    var body: some View {
+        ZStack {
+            Circle().strokeBorder(Theme.accent, lineWidth: shot ? 0.5 : 6)
+                .scaleEffect(shot ? 1.9 : 0.4)
+                .opacity(shot ? 0 : 0.9)
+            ForEach(0..<6, id: \.self) { i in
+                Circle().fill(Theme.accent)
+                    .frame(width: 5, height: 5)
+                    .offset(y: shot ? -34 : -8)
+                    .rotationEffect(.degrees(Double(i) * 60))
+                    .opacity(shot ? 0 : 1)
+            }
+        }
+        .opacity(on ? 1 : 0)
+        .allowsHitTesting(false)
+        .onChange(of: on) { _, now in
+            guard now else { return }
+            shot = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { withAnimation(.easeOut(duration: 0.6)) { shot = true } }
+        }
+        .onAppear { shot = true }
     }
 }

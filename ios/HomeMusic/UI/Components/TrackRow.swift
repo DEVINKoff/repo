@@ -56,6 +56,7 @@ struct TrackRow: View {
                 Label("В очередь", systemImage: "text.line.last.and.arrowtriangle.forward")
             }.tint(.orange)
         }
+        .rowTransition()
         .onAppear { if !track.isOwned { OnScreen.shared.appear(track.ref, order: order) } }
         .onDisappear { OnScreen.shared.disappear(track.ref) }
     }

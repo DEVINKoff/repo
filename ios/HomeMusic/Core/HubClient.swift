@@ -216,6 +216,10 @@ extension HubClient {
     func clearSearchHistory() async throws -> OkOut { try await request("DELETE", "/api/search/history") }
     func artist(_ ref: String, fresh: Bool = false) async throws -> ArtistPageOut { try await cachedGet("/api/catalog/artist/\(enc(ref))", fresh: fresh) }
     func album(_ ref: String, fresh: Bool = false) async throws -> AlbumOut { try await cachedGet("/api/catalog/album/\(enc(ref))", fresh: fresh) }
+    /// The album's animated cover (an HLS link from Apple Music), when it has one.
+    func motionCover(artist: String, album: String, ref: String?) async throws -> MotionOut {
+        try await request("GET", "/api/catalog/motion", query: ["artist": artist, "album": album, "ref": ref], timeout: 15)
+    }
 
     // listening before download
     func listen(_ ref: String) async throws -> ListenOut { try await request("GET", "/api/listen", query: ["ref": ref]) }

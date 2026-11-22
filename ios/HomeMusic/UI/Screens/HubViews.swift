@@ -125,6 +125,8 @@ struct MoreView: View {
                 Text("Умное перемешивание добавляет рекомендации между песнями плейлистов и «Понравившихся». Экономия трафика: в сотовой сети Хаб отдаёт лёгкую копию (Opus 160 кбит/с).")
             }
 
+            AppearanceSection()
+
             if app.me?.isAdmin == true {
                 Section("Администратор") {
                     web("Пользователи и приглашения", "person.3", .indigo, "/admin", nil)
@@ -177,6 +179,55 @@ struct MoreView: View {
             } icon: {
                 Image(systemName: icon).foregroundStyle(Theme.accent)
             }
+        }
+    }
+}
+
+
+/// «Оформление»: the accent colour (a row of swatches), light / dark, animated covers.
+struct AppearanceSection: View {
+    @Environment(AppTheme.self) private var theme
+
+    var body: some View {
+        @Bindable var theme = theme
+        Section {
+            ScrollView(.horizontal) {
+                HStack(spacing: 14) {
+                    ForEach(AccentChoice.allCases) { c in
+                        let on = theme.accent == c
+                        Button {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) { theme.accent = c }
+                        } label: {
+                            VStack(spacing: 6) {
+                                ZStack {
+                                    Circle().fill(c.color.gradient)
+                                    Circle().strokeBorder(.primary.opacity(on ? 0.9 : 0), lineWidth: 2.5).padding(-5)
+                                    if on {
+                                        Image(systemName: "checkmark").font(.footnote.weight(.bold))
+                                            .foregroundStyle(c == .mono ? Color(.systemBackground) : .white)
+                                            .transition(.scale.combined(with: .opacity))
+                                    }
+                                }
+                                .frame(width: 38, height: 38)
+                                .scaleEffect(on ? 1.08 : 1)
+                                Text(c.title).font(.caption2).foregroundStyle(on ? .primary : .secondary)
+                            }
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.pressable)
+                        .sensoryFeedback(.selection, trigger: on)
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+            .scrollIndicators(.hidden)
+            .listRowInsets(EdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10))
+            Picker(selection: $theme.appearance) {
+                ForEach(AppearanceChoice.allCases) { Text($0.title).tag($0) }
+            } label: { Label("Тема", systemImage: "circle.lefthalf.filled") }
+            Toggle(isOn: $theme.motionCovers) { Label("Живые обложки", systemImage: "play.rectangle.on.rectangle") }
+        } header: { Text("Оформление") } footer: {
+            Text("Живые обложки — анимированные обложки альбомов из Apple Music в плеере, когда они есть у альбома.")
         }
     }
 }

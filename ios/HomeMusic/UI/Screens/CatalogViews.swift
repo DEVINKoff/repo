@@ -182,9 +182,9 @@ struct CatalogArtistView: View {
     /// Every release the catalog has for the artist (albums first, then singles and EPs, then compilations), plus the
     /// albums of the user's library that the catalog lacks, with a filter by kind.
     @ViewBuilder private func discography(_ p: ArtistPageOut) -> some View {
-        // albums and EPs together (4+ tracks); singles apart — the Hub types releases by their real track count
-        let libAlbums = libraryAlbums.filter { ($0.songCount ?? 0) >= 4 }
-        let libSingles = libraryAlbums.filter { ($0.songCount ?? 0) < 4 }
+        // an album is 2+ tracks; singles apart — the Hub types releases by their real track count
+        let libAlbums = libraryAlbums.filter { ($0.songCount ?? 0) >= 2 }
+        let libSingles = libraryAlbums.filter { ($0.songCount ?? 0) < 2 }
         let eps = p.singles.filter { $0.recordType == "ep" }
         let albums = byDate(p.albums + eps).map { release($0) } + libAlbums.map { release($0) }
         let singles = byDate(p.singles.filter { $0.recordType != "ep" }).map { release($0) } + libSingles.map { release($0) }
@@ -196,7 +196,7 @@ struct CatalogArtistView: View {
                 SectionTitle(text: "Дискография · \(total)")
                 Picker("", selection: $kind.animation(Theme.spring)) {
                     Text("Все").tag(0)
-                    if !albums.isEmpty { Text("Альбомы и EP · \(albums.count)").tag(1) }
+                    if !albums.isEmpty { Text("Альбомы · \(albums.count)").tag(1) }
                     if !singles.isEmpty { Text("Синглы · \(singles.count)").tag(2) }
                     if !comps.isEmpty { Text("Сборники").tag(3) }
                 }
@@ -208,6 +208,9 @@ struct CatalogArtistView: View {
                         }
                         .buttonStyle(.pressable)
                         .transition(.scale(scale: 0.9).combined(with: .opacity))
+                        .scrollTransition(.animated(.smooth(duration: 0.35))) { c, phase in
+                            c.opacity(phase.isIdentity ? 1 : 0.3).scaleEffect(phase.isIdentity ? 1 : 0.9).offset(y: phase.value * 14)
+                        }
                     }
                 }
             }
@@ -245,6 +248,17 @@ struct CatalogArtistView: View {
             page = p
             error = nil
             await loadLibraryAlbums(p)
+            if !fresh { await refreshOnce(p) }
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// A first visit gets what the Hub had ready in a few seconds; the rest of the discography lands a little later.
+    private func refreshOnce(_ p: ArtistPageOut) async {
+        try? await Task.sleep(for: .seconds(9))
+        guard !Task.isCancelled, let fresh = try? await HubClient.shared.artist(ref, fresh: true) else { return }
+        let count = { (x: ArtistPageOut) in x.albums.count + x.singles.count + x.compilations.count }
+        guard count(fresh) != count(p) else { return }
+        withAnimation(Theme.spring) { page = fresh }
+        await loadLibraryAlbums(fresh)
     }
 }

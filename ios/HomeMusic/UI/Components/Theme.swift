@@ -1,8 +1,81 @@
+import Observation
+import UIKit
 import SwiftUI
+
+/// The accent colours on offer (light / dark variants) and the appearance.
+enum AccentChoice: String, CaseIterable, Identifiable {
+    case indigo, ocean, mint, lime, sun, coral, rose, violet, mono
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .indigo: "Индиго"
+        case .ocean: "Океан"
+        case .mint: "Мята"
+        case .lime: "Лайм"
+        case .sun: "Солнце"
+        case .coral: "Коралл"
+        case .rose: "Роза"
+        case .violet: "Фиалка"
+        case .mono: "Моно"
+        }
+    }
+
+    private var hex: (light: UInt32, dark: UInt32) {
+        switch self {
+        case .indigo: (0x5B4BFF, 0x8C82FF)
+        case .ocean: (0x0A84FF, 0x4FA8FF)
+        case .mint: (0x00A88F, 0x3EE0C0)
+        case .lime: (0x5E9E00, 0xA6E22E)
+        case .sun: (0xE08A00, 0xFFC233)
+        case .coral: (0xF0533A, 0xFF7A63)
+        case .rose: (0xE0336E, 0xFF6B9A)
+        case .violet: (0x9B3FE0, 0xC384FF)
+        case .mono: (0x1C1C1E, 0xF2F2F7)
+        }
+    }
+
+    var color: Color {
+        let (l, d) = hex
+        return Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: d) : UIColor(hex: l) })
+    }
+}
+
+enum AppearanceChoice: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String { self == .system ? "Как в системе" : self == .light ? "Светлое" : "Тёмное" }
+    var scheme: ColorScheme? { self == .system ? nil : self == .light ? .light : .dark }
+}
+
+@MainActor
+@Observable
+final class AppTheme {
+    static let shared = AppTheme()
+    var accent: AccentChoice { didSet { UserDefaults.standard.set(accent.rawValue, forKey: "theme.accent") } }
+    var appearance: AppearanceChoice { didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "theme.appearance") } }
+    /// Animated covers in the player (Apple Music motion artwork, when the album has one).
+    var motionCovers: Bool { didSet { UserDefaults.standard.set(motionCovers, forKey: "theme.motion") } }
+
+    init() {
+        let d = UserDefaults.standard
+        accent = AccentChoice(rawValue: d.string(forKey: "theme.accent") ?? "") ?? .indigo
+        appearance = AppearanceChoice(rawValue: d.string(forKey: "theme.appearance") ?? "") ?? .system
+        motionCovers = d.object(forKey: "theme.motion") as? Bool ?? true
+    }
+}
+
+extension UIColor {
+    convenience init(hex: UInt32) {
+        self.init(red: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                  blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+    }
+}
 
 /// The app's look: neutral surfaces, one accent, Liquid Glass for floating controls, wide type for headings.
 enum Theme {
-    static let accent = Color("AccentColor")
+    /// The accent the user picked in «Ещё → Оформление» (views that read it redraw when it changes).
+    @MainActor static var accent: Color { AppTheme.shared.accent.color }
     static let corner: CGFloat = 16
     static let spring = Animation.spring(response: 0.42, dampingFraction: 0.82)
 }
@@ -61,8 +134,9 @@ extension View {
     func rowTransition() -> some View {
         scrollTransition(.animated(.smooth(duration: 0.35))) { content, phase in
             content
-                .opacity(phase.isIdentity ? 1 : 0.4)
-                .offset(y: phase.value * 8)
+                .opacity(phase.isIdentity ? 1 : 0.55)
+                .scaleEffect(phase.isIdentity ? 1 : 0.97, anchor: .leading)
+                .offset(y: phase.value * 6)
         }
     }
 }
@@ -88,4 +162,16 @@ enum HiRes {
         }
         return s
     }
+}
+
+/// Fades out while blurring (and back in sharpening): the app's transition for content that swaps in place.
+struct BlurFade: ViewModifier {
+    let active: Bool
+    func body(content: Content) -> some View {
+        content.blur(radius: active ? 14 : 0).opacity(active ? 0 : 1)
+    }
+}
+
+extension AnyTransition {
+    static var blurFade: AnyTransition { .modifier(active: BlurFade(active: true), identity: BlurFade(active: false)) }
 }

@@ -6,6 +6,8 @@ struct HomeMusicApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        // covers and pages survive relaunches (the image memory cache doesn't)
+        URLCache.shared = URLCache(memoryCapacity: 32 * 1024 * 1024, diskCapacity: 400 * 1024 * 1024)
         Player.configureAudioSession()
         _ = SmartShuffle.shared // registers its hooks in the player
         _ = Wave.shared
@@ -27,7 +29,7 @@ struct HomeMusicApp: App {
                 .environment(Router.shared)
                 .environment(PlaylistPicker.shared)
                 .environment(Lyrics.shared)
-                .tint(Theme.accent)
+                .environment(AppTheme.shared)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -47,6 +49,7 @@ struct HomeMusicApp: App {
 
 struct RootView: View {
     @Environment(AppModel.self) private var app
+    @Environment(AppTheme.self) private var theme
 
     var body: some View {
         ZStack {
@@ -59,6 +62,9 @@ struct RootView: View {
             ToastOverlay()
         }
         .animation(.smooth, value: app.stage)
+        .tint(theme.accent.color)
+        .preferredColorScheme(theme.appearance.scheme)
+        .animation(.smooth(duration: 0.35), value: theme.accent)
     }
 }
 

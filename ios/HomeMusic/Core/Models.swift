@@ -599,3 +599,5 @@ enum HubEvent: Sendable {
     case searchHistory
     case reconnect
 }
+
+struct MotionOut: Codable, Sendable { var url: String? }

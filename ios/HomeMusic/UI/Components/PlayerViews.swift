@@ -29,12 +29,14 @@ struct MiniPlayer: View {
                 .buttonStyle(.pressable)
                 Button { player.next() } label: {
                     Image(systemName: "forward.fill").font(.title3).frame(width: 36, height: 36)
+                        .symbolEffect(.bounce.byLayer, value: t.uid)
                 }
                 .disabled(!player.hasNext && player.repeatMode != .all)
             }
             .foregroundStyle(.primary)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
+            .overlay(alignment: .bottom) { MiniProgress().padding(.horizontal, 18) }
             .contentShape(Rectangle())
             .animation(.spring(response: 0.4, dampingFraction: 0.85), value: t.uid)
             .onTapGesture { app.playerOpen = true }
@@ -47,6 +49,23 @@ struct MiniPlayer: View {
         case .error: return player.error ?? "Не удалось воспроизвести"
         default: return t.artist
         }
+    }
+}
+
+/// A hairline of progress under the mini player (its own view: only it redraws as the track plays).
+struct MiniProgress: View {
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        let f = player.duration > 0 ? min(1, max(0, player.position / player.duration)) : 0
+        GeometryReader { g in
+            Capsule().fill(Theme.accent)
+                .frame(width: g.size.width * f, height: 2)
+                .animation(.linear(duration: 0.25), value: f)
+        }
+        .frame(height: 2)
+        .opacity(f > 0 ? 0.9 : 0)
+        .allowsHitTesting(false)
     }
 }
 
