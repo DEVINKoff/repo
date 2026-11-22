@@ -116,6 +116,8 @@ struct LikedView: View {
     private func checkLive(_ songs: [Track]) async {
         var byKey: [String: QueueTrack] = [:]
         for t in songs { let q = QueueTrack(t); byKey[MotionCovers.key(q)] = byKey[MotionCovers.key(q)] ?? q }
+        // what the phone already knows shows at once
+        for (k, q) in byKey where MotionCovers.cached(q) != nil { live.insert(k) }
         let todo = Array(byKey.values)
         toCheck = todo.count
         checked = 0
@@ -128,7 +130,7 @@ struct LikedView: View {
                 next += 1
                 group.addTask { (await MotionCovers.key(q), await MotionCovers.lookup(q).status) }
             }
-            for _ in 0..<4 { add() }
+            for _ in 0..<3 { add() }
             for await (key, status) in group {
                 checked += 1
                 if status == "found" { withAnimation(.smooth) { _ = live.insert(key) } }

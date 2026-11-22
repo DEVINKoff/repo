@@ -135,7 +135,14 @@ struct PlayerView: View {
                     }
                     .glassCircle()
                     .accessibilityLabel("Кинорежим")
-                    Menu { TrackMenuItems(track: Track(t), context: player.context, inPlayer: true) } label: {
+                    Menu {
+                        TrackMenuItems(track: Track(t), context: player.context, inPlayer: true)
+                        Section {
+                            Toggle(isOn: Binding(get: { AppTheme.shared.motionCovers }, set: { AppTheme.shared.motionCovers = $0 })) {
+                                Label("Живые обложки", systemImage: "livephoto")
+                            }
+                        }
+                    } label: {
                         Image(systemName: "ellipsis").font(.headline).frame(width: 40, height: 40)
                     }
                     .glassCircle()

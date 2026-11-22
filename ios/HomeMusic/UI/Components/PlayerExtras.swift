@@ -234,9 +234,9 @@ struct CinematicPlayer: View {
         GeometryReader { g in
             let h = g.size.height
             let w = g.size.width
-            let barH: CGFloat = 92
+            let barH: CGFloat = 96
             let upper = h - barH
-            let art = min(upper * 0.92, w * 0.36)
+            let art = min(upper * 0.9, w * 0.34)
             VStack(spacing: 0) {
                 HStack(alignment: .center, spacing: w * 0.045) {
                     LiveCover(track: track, size: art, corner: art * 0.07, playing: player.isPlaying)
@@ -245,9 +245,9 @@ struct CinematicPlayer: View {
                         .animation(.spring(response: 0.6, dampingFraction: 0.75), value: player.isPlaying)
                         .id(track.uid)
                         .transition(.blurFade)
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack(alignment: .center, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: 4) {
                                 Text(track.title)
                                     .font(.system(size: 22, weight: .bold).width(.expanded))
                                     .lineLimit(1).minimumScaleFactor(0.7)
@@ -265,8 +265,10 @@ struct CinematicPlayer: View {
                             .buttonStyle(.plain)
                             .opacity(controls ? 1 : 0)
                         }
+                        .padding(.bottom, 4)
                         // the same lyrics as the portrait player: every line, scrolled to the sung one
                         LyricsView()
+                            .padding(.leading, 2)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .frame(maxWidth: .infinity, maxHeight: upper)
@@ -283,7 +285,10 @@ struct CinematicPlayer: View {
             .frame(width: w, height: h)
             .animation(.smooth(duration: 0.5), value: track.uid)
         }
-        .padding(.horizontal, 6)
+        // clear of the screen's rounded corners and the camera
+        .padding(.horizontal, 22)
+        .padding(.top, 26)
+        .padding(.bottom, 10)
         .background { CinematicBackdrop(url: track.coverUrl ?? track.coverSmallUrl) }
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
