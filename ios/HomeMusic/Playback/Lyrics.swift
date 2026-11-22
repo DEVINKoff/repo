@@ -149,6 +149,9 @@ final class Lyrics {
         return min * 60 + sec + frac
     }
 
+    private static let vowelSet = Set("аеёиоуыэюяaeiouyæøåäöü")
+    static func vowels(_ w: String) -> Int { w.lowercased().filter { vowelSet.contains($0) }.count }
+
     /// The words of a line with their times. A long instrumental gap after a line is not sung: the line ends after
     /// about the time its words take.
     private static func timed(id: Int, start: Double, nextStart: Double, raw: String) -> Line {
@@ -159,8 +162,10 @@ final class Lyrics {
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
         let tokens = plain.split(separator: " ").map(String.init)
         let gap = max(0.3, nextStart - start)
-        let natural = Double(tokens.reduce(0) { $0 + $1.count }) * 0.075 + Double(tokens.count) * 0.12
-        let end = start + min(gap, max(1.2, natural * 1.15))
+        // syllables (vowels) decide how long a word is sung, not its letters
+        let syllables = tokens.map { max(1, Self.vowels($0)) }
+        let natural = Double(syllables.reduce(0, +)) * 0.21 + 0.15
+        let end = start + min(gap * 0.95, max(0.8, natural))
 
         var words: [Word] = []
         if !marks.isEmpty {
@@ -174,12 +179,13 @@ final class Lyrics {
                 for w in piece.split(separator: " ") { words.append(Word(text: String(w), start: t0, end: max(t0 + 0.05, t1))) }
             }
         } else if !tokens.isEmpty {
-            // spread over the line by length (a vowel-heavy word takes longer)
-            let weights = tokens.map { Double(max(1, $0.count)) + 1.5 }
+            // spread over the line by syllables; vocals start a hair after the line's stamp
+            let weights = syllables.map { Double($0) + 0.35 }
             let total = weights.reduce(0, +)
-            var t = start
+            let lead = min(0.12, (end - start) * 0.05)
+            var t = start + lead
             for (w, weight) in zip(tokens, weights) {
-                let d = (end - start) * weight / total
+                let d = (end - start - lead) * weight / total
                 words.append(Word(text: w, start: t, end: t + d))
                 t += d
             }
@@ -305,11 +311,16 @@ struct SungWord: View {
                     .foregroundStyle(.white)
                     .mask(alignment: .leading) {
                         GeometryReader { g in
-                            LinearGradient(stops: [.init(color: .black, location: 0),
-                                                   .init(color: .black, location: max(0, progress - 0.08)),
-                                                   .init(color: .clear, location: min(1, progress + 0.08))],
-                                           startPoint: .leading, endPoint: .trailing)
-                                .frame(width: g.size.width * 1.2)
+                            if progress >= 1 {
+                                Rectangle()
+                            } else if progress > 0 {
+                                // a soft edge that never runs ahead of the sung part
+                                LinearGradient(stops: [.init(color: .black, location: 0),
+                                                       .init(color: .black, location: max(0, progress - 0.12)),
+                                                       .init(color: .clear, location: progress)],
+                                               startPoint: .leading, endPoint: .trailing)
+                                    .frame(width: g.size.width)
+                            }
                         }
                     }
             }
