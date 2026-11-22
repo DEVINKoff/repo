@@ -7,53 +7,69 @@ struct LibraryView: View {
 
     var body: some View {
         List {
+            HStack {
+                Text("Библиотека").font(.display(28, .heavy))
+                Spacer()
+                AccountButton()
+            }
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
             Section {
-                row("Понравившиеся", "heart.fill", .pink, .liked)
-                row("Плейлисты", "music.note.list", .orange, .playlists)
-                row("Альбомы", "square.stack.fill", .blue, .ndAlbums)
-                row("Исполнители", "music.microphone", .purple, .ndArtists)
-                NavigationLink(value: Dest.downloads) {
-                    HStack {
-                        Label { Text("Загрузки").font(.title3) } icon: { Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green) }
-                        Spacer()
-                        if downloads.activeCount > 0 {
-                            Text("\(downloads.activeCount)").font(.subheadline.weight(.semibold).monospacedDigit())
-                                .padding(.horizontal, 8).padding(.vertical, 2)
-                                .background(Color.accentColor, in: Capsule())
-                                .foregroundStyle(.white)
-                        }
-                    }
-                    .padding(.vertical, 6)
-                }
+                row("Понравившиеся", "heart", .liked)
+                row("Плейлисты", "music.note.list", .playlists)
+                row("Альбомы", "square.stack", .ndAlbums)
+                row("Исполнители", "music.microphone", .ndArtists)
+                row("Загрузки", "arrow.down.circle", .downloads, badge: downloads.activeCount)
             }
             if !recent.isEmpty {
                 Section {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 18) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 20) {
                         ForEach(recent) { a in
                             NavigationLink(value: Dest.ndAlbum(a.id)) {
                                 AlbumCard(title: a.title, subtitle: a.artist, cover: a.coverUrl, width: 160)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.pressable)
                         }
                     }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                     .listRowSeparator(.hidden)
                 } header: {
-                    Text("Недавно добавленные").font(.title2.weight(.bold)).foregroundStyle(.primary).textCase(nil)
+                    SectionTitle(text: "Недавно добавленные").textCase(nil)
                 }
             }
         }
         .listStyle(.plain)
-        .navigationTitle("Библиотека")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { AccountButton() } }
-        .task(id: library.generation) { recent = (try? await HubClient.shared.ndAlbums(type: "newest", size: 30)) ?? recent }
-        .refreshable { recent = (try? await HubClient.shared.ndAlbums(type: "newest", size: 30)) ?? recent }
+        .toolbar(.hidden, for: .navigationBar)
+        .task(id: library.generation) { await load() }
+        .refreshable { await load() }
     }
 
-    private func row(_ title: String, _ icon: String, _ color: Color, _ d: Dest) -> some View {
+    private func load() async {
+        if let r = try? await HubClient.shared.ndAlbums(type: "newest", size: 30) {
+            withAnimation(Theme.spring) { recent = r }
+        }
+    }
+
+    private func row(_ title: String, _ icon: String, _ d: Dest, badge: Int = 0) -> some View {
         NavigationLink(value: d) {
-            Label { Text(title).font(.title3) } icon: { Image(systemName: icon).foregroundStyle(color) }
-                .padding(.vertical, 6)
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 26)
+                Text(title).font(.body.weight(.medium))
+                Spacer()
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Theme.accent, in: Capsule())
+                        .foregroundStyle(.white)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.vertical, 8)
+            .animation(Theme.spring, value: badge)
         }
     }
 }
@@ -77,34 +93,15 @@ struct LikedView: View {
                     .listRowSeparator(.hidden)
                 switch part {
                 case .songs:
-                    // downloaded songs first, then ♥ that play from the sources until they are downloaded
-                    let downloaded = l.songs.filter { $0.isOwned || $0.ndSongId != nil }
-                    let pending = l.songs.filter { !($0.isOwned || $0.ndSongId != nil) }
-                    let songs = downloaded + pending
-                    if songs.isEmpty {
+                    if l.songs.isEmpty {
                         ContentUnavailableView("Пока пусто", systemImage: "heart", description: Text("Отмечайте песни ♥ — они появятся здесь"))
                     } else {
                         PlayShuffleButtons(
-                            play: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
-                            shuffle: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
+                            play: { player.listenAll(l.songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
+                            shuffle: { player.listenAll(l.songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
                             .listRowSeparator(.hidden)
-                        Section {
-                            ForEach(Array(downloaded.enumerated()), id: \.offset) { i, t in
-                                TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: i)
-                            }
-                        } header: {
-                            if !pending.isEmpty { Text("Скачанные · \(downloaded.count)") }
-                        }
-                        if !pending.isEmpty {
-                            Section {
-                                ForEach(Array(pending.enumerated()), id: \.offset) { i, t in
-                                    TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: downloaded.count + i)
-                                }
-                            } header: {
-                                Text("Ещё не скачаны · \(pending.count)")
-                            } footer: {
-                                Text("Играют из источников, пока Хаб их не скачает")
-                            }
+                        ForEach(Array(l.songs.enumerated()), id: \.offset) { i, t in
+                            TrackRow(track: t, list: l.songs, context: "liked", origin: "liked", smartPage: page, order: i)
                         }
                     }
                 case .albums:

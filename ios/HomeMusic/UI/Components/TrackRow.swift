@@ -39,8 +39,9 @@ struct TrackRow: View {
                     Spacer(minLength: 4)
                 }
                 .contentShape(Rectangle())
+                .animation(.smooth(duration: 0.3), value: isCurrent)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.pressable)
             TrackMenuButton(track: track, context: context)
                 .buttonStyle(.borderless)
         }
@@ -68,9 +69,10 @@ struct TrackRow: View {
             .frame(width: 26)
         } else if showCover {
             ZStack {
-                Cover(url: track.coverSmallUrl ?? track.coverUrl, size: 48, corner: 6)
+                Cover(url: track.coverSmallUrl ?? track.coverUrl, size: 48, corner: 10)
                 if isCurrent {
-                    RoundedRectangle(cornerRadius: 6).fill(.black.opacity(0.35)).frame(width: 48, height: 48)
+                    RoundedRectangle(cornerRadius: 10).fill(.black.opacity(0.4)).frame(width: 48, height: 48)
+                        .transition(.opacity)
                     PlayingBars(active: player.phase == .playing).foregroundStyle(.white)
                 }
             }

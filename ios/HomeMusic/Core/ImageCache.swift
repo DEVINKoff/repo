@@ -28,6 +28,8 @@ struct Cover: View {
     var corner: CGFloat = 8
     var round = false
     var symbol = "music.note"
+    /// tried when `url` gives no image (a high-res variant the source doesn't have)
+    var fallback: String? = nil
 
     @State private var image: UIImage?
 
@@ -51,9 +53,9 @@ struct Cover: View {
             guard let u = resolved else { image = nil; return }
             if let hit = ImageCache.shared.cached(u) { image = hit; return }
             // keep showing the previous image until the new one is ready (no flash between tracks)
-            if let loaded = await ImageCache.shared.image(u) {
-                withAnimation(.easeOut(duration: 0.2)) { image = loaded }
-            }
+            var loaded = await ImageCache.shared.image(u)
+            if loaded == nil, let f = HubClient.shared.absolute(fallback) { loaded = await ImageCache.shared.image(f) }
+            if let loaded { withAnimation(.easeOut(duration: 0.2)) { image = loaded } }
         }
     }
 }

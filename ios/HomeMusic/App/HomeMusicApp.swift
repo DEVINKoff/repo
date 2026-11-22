@@ -25,7 +25,8 @@ struct HomeMusicApp: App {
                 .environment(SmartShuffle.shared)
                 .environment(Router.shared)
                 .environment(PlaylistPicker.shared)
-                .tint(Color("AccentColor"))
+                .environment(Lyrics.shared)
+                .tint(Theme.accent)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -101,15 +102,15 @@ struct MainTabs: View {
             Tab("Главная", systemImage: "house.fill", value: AppTab.home) {
                 NavigationStack(path: $router.home) { HomeView().destinations() }
             }
+            Tab("Поиск", systemImage: "magnifyingglass", value: AppTab.search) {
+                NavigationStack(path: $router.search) { SearchView().destinations() }
+            }
             Tab("Библиотека", systemImage: "square.stack.fill", value: AppTab.library) {
                 NavigationStack(path: $router.library) { LibraryView().destinations() }
             }
             .badge(downloads.activeCount)
             Tab("Ещё", systemImage: "ellipsis.circle.fill", value: AppTab.more) {
                 NavigationStack(path: $router.more) { MoreView().destinations() }
-            }
-            Tab(value: AppTab.search, role: .search) {
-                NavigationStack(path: $router.search) { SearchView().destinations() }
             }
         }
     }

@@ -12,7 +12,7 @@ struct AlbumCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .topTrailing) {
-                Cover(url: cover, size: width, corner: 10, symbol: "square.stack")
+                Cover(url: cover, size: width, corner: 14, symbol: "square.stack")
                 if let badge {
                     Text(badge).font(.caption2.weight(.semibold))
                         .padding(.horizontal, 7).padding(.vertical, 3)
@@ -20,10 +20,11 @@ struct AlbumCard: View {
                         .padding(6)
                 }
             }
-            Text(title).font(.subheadline.weight(.medium)).lineLimit(1)
+            Text(title).font(.subheadline.weight(.semibold)).lineLimit(1)
             if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
         }
         .frame(width: width, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -47,22 +48,15 @@ struct Shelf<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button { action?() } label: {
-                HStack(spacing: 4) {
-                    Text(title).font(.title2.weight(.bold)).foregroundStyle(.primary)
-                    if action != nil { Image(systemName: "chevron.right").font(.headline).foregroundStyle(.secondary) }
-                }
-            }
-            .buttonStyle(.plain)
-            .disabled(action == nil)
-            .padding(.horizontal)
+        VStack(alignment: .leading, spacing: 12) {
+            SectionTitle(text: title, action: action).padding(.horizontal, 20)
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) { content() }
-                    .padding(.horizontal)
+                    .padding(.horizontal, 20)
                     .scrollTargetLayout()
             }
             .scrollTargetBehavior(.viewAligned)
+            .scrollClipDisabled()
         }
     }
 }
@@ -72,17 +66,18 @@ struct PlayShuffleButtons: View {
     var play: () -> Void
     var shuffle: () -> Void
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Button(action: play) {
-                Label("Слушать", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity, minHeight: 34)
+                Label("Слушать", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity, minHeight: 36)
             }
-            .glassButton()
+            .prominentButton()
+            .tint(Theme.accent)
             Button(action: shuffle) {
-                Label("Перемешать", systemImage: "shuffle").font(.headline).frame(maxWidth: .infinity, minHeight: 34)
+                Label("Перемешать", systemImage: "shuffle").font(.headline).frame(maxWidth: .infinity, minHeight: 36)
             }
             .glassButton()
+            .tint(.primary)
         }
-        .tint(.accentColor)
     }
 }
 
@@ -97,12 +92,13 @@ struct ListHeader: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            Cover(url: cover, size: 250, corner: 12, round: round, symbol: round ? "music.microphone" : "square.stack")
-                .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
-            Text(title).font(.title2.weight(.bold)).multilineTextAlignment(.center)
+            Cover(url: cover, size: 240, corner: 22, round: round, symbol: round ? "music.microphone" : "square.stack")
+                .shadow(color: .black.opacity(0.22), radius: 22, y: 12)
+                .transition(.scale(scale: 0.9).combined(with: .opacity))
+            Text(title).font(.display(22)).multilineTextAlignment(.center).padding(.top, 6)
             if let subtitle {
                 Button { onSubtitle?() } label: {
-                    Text(subtitle).font(.title3).foregroundStyle(Color.accentColor)
+                    Text(subtitle).font(.body.weight(.medium)).foregroundStyle(onSubtitle == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.accent))
                 }
                 .buttonStyle(.plain)
                 .disabled(onSubtitle == nil)
@@ -122,7 +118,7 @@ struct Loading<T, Content: View>: View {
     @ViewBuilder var content: (T) -> Content
 
     var body: some View {
-        if let value { content(value) }
+        if let value { content(value).transition(.opacity) }
         else if let error {
             ContentUnavailableView {
                 Label("Не загрузилось", systemImage: "wifi.exclamationmark")

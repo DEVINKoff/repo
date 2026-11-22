@@ -62,8 +62,11 @@ enum NowPlaying {
             artwork = nil
             let ref = t.ref
             Task {
-                guard let url = HubClient.shared.absolute(t.coverUrl ?? t.coverSmallUrl),
-                      let image = await ImageCache.shared.image(url) else { return }
+                let original = t.coverUrl ?? t.coverSmallUrl
+                var image: UIImage?
+                if let hi = HubClient.shared.absolute(HiRes.cover(original)) { image = await ImageCache.shared.image(hi) }
+                if image == nil, let low = HubClient.shared.absolute(original) { image = await ImageCache.shared.image(low) }
+                guard let image else { return }
                 guard artworkRef == ref else { return }
                 artwork = makeArtwork(image)
                 update(Player.shared)

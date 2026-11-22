@@ -83,6 +83,7 @@ struct CatalogArtistView: View {
     @State private var page: ArtistPageOut?
     @State private var error: String?
     @State private var allTop = false
+    @State private var kind = 0
 
     var body: some View {
         Loading(value: page, error: error, retry: { Task { await load(fresh: true) } }) { p in
@@ -91,7 +92,7 @@ struct CatalogArtistView: View {
                     VStack(spacing: 14) {
                         Cover(url: p.artist.pictureUrl ?? p.artist.pictureSmallUrl, size: 200, round: true, symbol: "music.microphone")
                             .shadow(color: .black.opacity(0.2), radius: 18, y: 10)
-                        Text(p.artist.name).font(.largeTitle.weight(.bold)).multilineTextAlignment(.center)
+                        Text(p.artist.name).font(.display(30, .heavy)).multilineTextAlignment(.center)
                         if let fans = p.artist.nbFans, fans > 0 {
                             Text("\(fans.formatted()) слушателей на Deezer").font(.footnote).foregroundStyle(.secondary)
                         }
@@ -115,7 +116,7 @@ struct CatalogArtistView: View {
 
                     if !p.topTracks.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Популярные треки").font(.title2.weight(.bold)).padding(.horizontal)
+                            SectionTitle(text: "Популярные треки").padding(.horizontal, 20)
                             let shown = allTop ? p.topTracks : Array(p.topTracks.prefix(5))
                             ForEach(Array(shown.enumerated()), id: \.element.ref) { i, t in
                                 TrackRow(track: t, list: p.topTracks, context: "artist", origin: "artist", order: i)
@@ -128,9 +129,7 @@ struct CatalogArtistView: View {
                             }
                         }
                     }
-                    releases("Альбомы", p.albums)
-                    releases("Синглы и EP", p.singles)
-                    releases("Сборники", p.compilations)
+                    discography(p)
                 }
                 .padding(.vertical)
             }
@@ -155,17 +154,52 @@ struct CatalogArtistView: View {
         .task { await load() }
     }
 
-    @ViewBuilder private func releases(_ title: String, _ list: [AlbumOut]) -> some View {
-        if !list.isEmpty {
-            Shelf(title: title) {
-                ForEach(list) { a in
-                    NavigationLink(value: Dest.catalogAlbum(a.ref)) {
-                        AlbumCard(title: a.title, subtitle: a.displayYear.map(String.init), cover: a.coverSmallUrl ?? a.coverUrl,
-                                  badge: a.ownedStatus == "full" ? "в библиотеке" : a.ownedStatus == "partial" ? "частично" : nil)
+    /// Every release the catalog has for the artist, newest first, with a filter by kind.
+    @ViewBuilder private func discography(_ p: ArtistPageOut) -> some View {
+        let all = (p.albums + p.singles + p.compilations).sorted { ($0.releaseDate ?? "") > ($1.releaseDate ?? "") }
+        let shown = filtered(p, all)
+        if !all.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionTitle(text: "Дискография · \(all.count)")
+                Picker("", selection: $kind.animation(Theme.spring)) {
+                    Text("Все").tag(0)
+                    if !p.albums.isEmpty { Text("Альбомы").tag(1) }
+                    if !p.singles.isEmpty { Text("Синглы").tag(2) }
+                    if !p.compilations.isEmpty { Text("Сборники").tag(3) }
+                }
+                .pickerStyle(.segmented)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 20) {
+                    ForEach(Array(shown.enumerated()), id: \.element.ref) { _, a in
+                        NavigationLink(value: Dest.catalogAlbum(a.ref)) {
+                            AlbumCard(title: a.title,
+                                      subtitle: [a.displayYear.map(String.init), kindTitle(a.recordType)].compactMap { $0 }.joined(separator: " · "),
+                                      cover: a.coverSmallUrl ?? a.coverUrl, width: 160,
+                                      badge: a.ownedStatus == "full" ? "в библиотеке" : a.ownedStatus == "partial" ? "частично" : nil)
+                        }
+                        .buttonStyle(.pressable)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
                     }
-                    .buttonStyle(.plain)
                 }
             }
+            .padding(.horizontal, 20)
+        }
+    }
+
+    private func filtered(_ p: ArtistPageOut, _ all: [AlbumOut]) -> [AlbumOut] {
+        switch kind {
+        case 1: return p.albums
+        case 2: return p.singles
+        case 3: return p.compilations
+        default: return all
+        }
+    }
+
+    private func kindTitle(_ t: String?) -> String? {
+        switch t {
+        case "single": return "сингл"
+        case "ep": return "EP"
+        case "compile": return "сборник"
+        default: return nil
         }
     }
 

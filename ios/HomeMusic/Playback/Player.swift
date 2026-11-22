@@ -124,7 +124,7 @@ final class Player {
             let status = p.timeControlStatus
             Task { @MainActor in self?.timeControlChanged(status) }
         }
-        timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.5, preferredTimescale: 600), queue: .main) { [weak self] t in
+        timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
             MainActor.assumeIsolated { self?.timeUpdate(t.seconds) }
         }
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: nil, queue: .main) { [weak self] note in
@@ -157,7 +157,7 @@ final class Player {
     }
 
     static func configureAudioSession() {
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, policy: .longFormAudio)
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 

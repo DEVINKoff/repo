@@ -9,18 +9,24 @@ struct MiniPlayer: View {
     var body: some View {
         if let t = player.track {
             HStack(spacing: 12) {
-                Cover(url: t.coverSmallUrl ?? t.coverUrl, size: 38, corner: 7)
+                Cover(url: t.coverSmallUrl ?? t.coverUrl, size: 38, corner: 9)
+                    .id(t.uid)
+                    .transition(.scale(scale: 0.7).combined(with: .opacity))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(t.title).font(.subheadline.weight(.semibold)).lineLimit(1)
                     Text(subtitle(t)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+                .id("title-\(t.uid)")
+                .transition(.push(from: .bottom).combined(with: .opacity))
                 Spacer(minLength: 0)
                 Button { player.toggle() } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
+                        .foregroundStyle(Theme.accent)
                         .contentTransition(.symbolEffect(.replace))
                         .frame(width: 36, height: 36)
                 }
+                .buttonStyle(.pressable)
                 Button { player.next() } label: {
                     Image(systemName: "forward.fill").font(.title3).frame(width: 36, height: 36)
                 }
@@ -30,6 +36,7 @@ struct MiniPlayer: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: t.uid)
             .onTapGesture { app.playerOpen = true }
         }
     }

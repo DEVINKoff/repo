@@ -175,7 +175,7 @@ struct MoreView: View {
                     if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
                 }
             } icon: {
-                Image(systemName: icon).foregroundStyle(color)
+                Image(systemName: icon).foregroundStyle(Theme.accent)
             }
         }
     }
