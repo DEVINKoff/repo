@@ -4,11 +4,12 @@ import SwiftUI
 
 /// The accent colours on offer (light / dark variants) and the appearance.
 enum AccentChoice: String, CaseIterable, Identifiable {
-    case indigo, ocean, mint, lime, sun, coral, rose, violet, mono
+    case adaptive, indigo, ocean, mint, lime, sun, coral, rose, violet, mono
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .adaptive: "Адаптивный"
         case .indigo: "Индиго"
         case .ocean: "Океан"
         case .mint: "Мята"
@@ -23,7 +24,7 @@ enum AccentChoice: String, CaseIterable, Identifiable {
 
     private var hex: (light: UInt32, dark: UInt32) {
         switch self {
-        case .indigo: (0x5B4BFF, 0x8C82FF)
+        case .adaptive, .indigo: (0x5B4BFF, 0x8C82FF)
         case .ocean: (0x0A84FF, 0x4FA8FF)
         case .mint: (0x00A88F, 0x3EE0C0)
         case .lime: (0x5E9E00, 0xA6E22E)
@@ -35,14 +36,28 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var onColor: Color {
+    /// Text and icons on the accent: black on a light one (Моно in the dark theme, a pale adaptive colour), else white.
+    @MainActor var onColor: Color {
+        if self == .adaptive, let seed = AppTheme.shared.adaptiveSeed {
+            return Color(UIColor { AccentChoice.adaptive(seed, $0.userInterfaceStyle == .dark).luminance > 0.62 ? .black : .white })
+        }
         guard self == .mono else { return .white }
         return Color(UIColor { $0.userInterfaceStyle == .dark ? .black : .white })
     }
 
-    var color: Color {
+    @MainActor var color: Color {
+        if self == .adaptive, let seed = AppTheme.shared.adaptiveSeed {
+            return Color(UIColor { AccentChoice.adaptive(seed, $0.userInterfaceStyle == .dark) })
+        }
         let (l, d) = hex
         return Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(hex: d) : UIColor(hex: l) })
+    }
+
+    /// The cover's colour made fit for an accent: vivid enough, light enough on dark and dark enough on light.
+    nonisolated static func adaptive(_ seed: (h: CGFloat, s: CGFloat, b: CGFloat), _ dark: Bool) -> UIColor {
+        let s = min(0.85, max(0.42, seed.s))
+        let b = dark ? max(0.78, seed.b) : min(0.72, max(0.48, seed.b))
+        return UIColor(hue: seed.h, saturation: s, brightness: b, alpha: 1)
     }
 }
 
@@ -61,6 +76,44 @@ final class AppTheme {
     var appearance: AppearanceChoice { didSet { UserDefaults.standard.set(appearance.rawValue, forKey: "theme.appearance") } }
     /// Animated covers in the player (Apple Music motion artwork, when the album has one).
     var motionCovers: Bool { didSet { UserDefaults.standard.set(motionCovers, forKey: "theme.motion") } }
+    /// «Адаптивный»: the hue, saturation and brightness of the playing track's cover (nil — not known yet: indigo).
+    private(set) var adaptiveSeed: (h: CGFloat, s: CGFloat, b: CGFloat)?
+    @ObservationIgnored private var adaptedURL: URL?
+
+    /// The playing track's cover changed: its most vivid colour becomes the accent (a grey cover keeps the last one).
+    func adapt(to url: URL?) async {
+        guard accent == .adaptive, let url, url != adaptedURL else { return }
+        adaptedURL = url
+        guard let image = await ImageCache.shared.image(url, px: 128),
+              let seed = await Task.detached(priority: .utility, operation: { Self.vivid(image) }).value else { return }
+        withAnimation(.smooth(duration: 0.9)) { adaptiveSeed = seed }
+    }
+
+    /// The most vivid colour of an image: the average of its most saturated, not too dark pixels.
+    nonisolated private static func vivid(_ image: UIImage) -> (h: CGFloat, s: CGFloat, b: CGFloat)? {
+        guard let cg = image.cgImage else { return nil }
+        let n = 24
+        var px = [UInt8](repeating: 0, count: n * n * 4)
+        guard let ctx = CGContext(data: &px, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n * 4,
+                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: n, height: n))
+        var cands: [(score: CGFloat, r: CGFloat, g: CGFloat, b: CGFloat, s: CGFloat, v: CGFloat)] = []
+        for i in stride(from: 0, to: px.count, by: 4) {
+            let r = CGFloat(px[i]) / 255, g = CGFloat(px[i + 1]) / 255, b = CGFloat(px[i + 2]) / 255
+            let mx = max(r, g, b), mn = min(r, g, b)
+            let v = mx, sat = mx > 0 ? (mx - mn) / mx : 0
+            guard v > 0.18 else { continue }
+            cands.append((sat * (0.4 + v), r, g, b, sat, v))
+        }
+        let top = cands.sorted { $0.score > $1.score }.prefix(max(8, cands.count / 7))
+        guard !top.isEmpty, top.map(\.s).reduce(0, +) / CGFloat(top.count) > 0.18 else { return nil }
+        let k = CGFloat(top.count)
+        let c = UIColor(red: top.map(\.r).reduce(0, +) / k, green: top.map(\.g).reduce(0, +) / k, blue: top.map(\.b).reduce(0, +) / k, alpha: 1)
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return (h, s, b)
+    }
 
     init() {
         let d = UserDefaults.standard
@@ -183,4 +236,13 @@ struct BlurFade: ViewModifier {
 
 extension AnyTransition {
     static var blurFade: AnyTransition { .modifier(active: BlurFade(active: true), identity: BlurFade(active: false)) }
+}
+
+extension UIColor {
+    /// Relative luminance (0 black … 1 white).
+    var luminance: CGFloat {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
 }

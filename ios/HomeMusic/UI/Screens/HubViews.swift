@@ -205,7 +205,13 @@ struct AppearanceSection: View {
                         } label: {
                             VStack(spacing: 6) {
                                 ZStack {
-                                    Circle().fill(c.color.gradient)
+                                    if c == .adaptive {
+                                        // the swatch of «Адаптивный»: every colour, and the current one in the middle
+                                        Circle().fill(AngularGradient(colors: [.red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink, .red], center: .center))
+                                        Circle().fill(c.color).padding(9)
+                                    } else {
+                                        Circle().fill(c.color.gradient)
+                                    }
                                     Circle().strokeBorder(.primary.opacity(on ? 0.9 : 0), lineWidth: 2.5).padding(-5)
                                     if on {
                                         Image(systemName: "checkmark").font(.footnote.weight(.bold))
@@ -233,7 +239,7 @@ struct AppearanceSection: View {
             Toggle(isOn: $theme.motionCovers) { Label("Живые обложки", systemImage: "play.rectangle.on.rectangle") }
                 .tint(Theme.toggle)
         } header: { Text("Оформление") } footer: {
-            Text("Живые обложки — анимированные обложки альбомов из Apple Music в плеере, когда они есть у альбома.")
+            Text("«Адаптивный» — цвет берётся из обложки играющего трека. Живые обложки — анимированные обложки альбомов из Apple Music в плеере, когда они есть у альбома.")
         }
     }
 }

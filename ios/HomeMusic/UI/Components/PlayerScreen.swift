@@ -252,7 +252,8 @@ struct PlayerView: View {
             .opacity(0.65)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.pressable)
+        // no press animation: it caught the start of a swipe down and made the name lag behind the title
+        .buttonStyle(.plain)
     }
 
     private func openArtist(_ t: QueueTrack) {

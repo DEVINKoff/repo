@@ -312,17 +312,6 @@ struct CinematicPlayer: View {
                     .ignoresSafeArea()
             }
         }
-        .overlay(alignment: .topTrailing) {
-            // the very corner of the screen (the camera sits on a side in landscape, not up here)
-            VolumeDial()
-                .padding(.top, 8)
-                .padding(.trailing, 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .ignoresSafeArea()
-        }
-        .overlay(alignment: .topLeading) {
-            SystemVolumeHider().frame(width: 1, height: 1).allowsHitTesting(false)
-        }
         .animation(.smooth(duration: 0.45), value: controls)
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true

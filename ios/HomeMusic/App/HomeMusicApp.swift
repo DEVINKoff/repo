@@ -135,14 +135,16 @@ struct RootView: View {
         }
         .animation(.smooth, value: app.stage)
         .tint(theme.accent.color)
+        // «Адаптивный»: the accent follows the playing track's cover
+        .task(id: [Player.shared.track?.coverSmallUrl ?? Player.shared.track?.coverUrl ?? "", theme.accent.rawValue]) {
+            await theme.adapt(to: HubClient.shared.absolute(Player.shared.track?.coverSmallUrl ?? Player.shared.track?.coverUrl))
+        }
         .preferredColorScheme(theme.appearance.scheme)
         .animation(.smooth(duration: 0.35), value: theme.accent)
     }
 }
 
 struct MainTabs: View {
-    /// the mini player and the full player are one thing that grows and shrinks (the zoom transition)
-    @Namespace private var playerZoom
     @Environment(AppModel.self) private var app
     @Environment(Router.self) private var router
     @Environment(Player.self) private var player
@@ -156,7 +158,6 @@ struct MainTabs: View {
         content
             .sheet(isPresented: $app.playerOpen) {
                 PlayerView()
-                    .navigationTransition(.zoom(sourceID: "player", in: playerZoom))
             }
             .sheet(item: $picker.request) { PlaylistPickerSheet(request: $0) }
             .onChange(of: app.playerOpen) { _, open in AppDelegate.allowLandscape(open); Haptics.soft(open ? 0.7 : 0.4) }
@@ -172,7 +173,7 @@ struct MainTabs: View {
                 .tabBarMinimizeBehavior(.onScrollDown)
                 .tabViewBottomAccessory {
                     if player.track != nil {
-                        MiniPlayer().matchedTransitionSource(id: "player", in: playerZoom)
+                        MiniPlayer()
                     } else {
                         NothingPlaying()
                     }
@@ -182,7 +183,6 @@ struct MainTabs: View {
                 .safeAreaInset(edge: .bottom) {
                     if player.track != nil {
                         MiniPlayer()
-                            .matchedTransitionSource(id: "player", in: playerZoom)
                             .glassRect(18)
                             .padding(.horizontal, 10)
                             .padding(.bottom, 54)
@@ -230,17 +230,18 @@ struct NothingPlaying: View {
     }
 }
 
-/// The opening, about 2.4 s, on pure black, all of it a function of time:
-/// 1. drops of liquid glass orbit, seen by their own light (a lit rim, a faint inner glow, edges splitting the light);
+/// The opening, about 2.4 s, on pure black (pure white in the light theme), all of it a function of time:
+/// 1. drops of liquid glass orbit, seen by their rims (lit on black, shaded on white) and edges splitting the light;
 /// 2. they gather into one lens, which breathes once;
-/// 3. the lens tears in two like a liquid: one part flows up into the Dynamic Island (on phones that have one), the
-///    other down into the dock; the black lifts and the app is there, its island and dock where the glass landed.
+/// 3. the lens flows down into the dock and stretches into its shape; the background lifts and the app is there,
+///    its dock where the glass landed.
 struct LaunchSplash: View {
     let reveal: () -> Void
     let done: () -> Void
     @State private var start = Date()
     @State private var finished = false
     @State private var insets = UIEdgeInsets.zero
+    @Environment(\.colorScheme) private var scheme
 
     private static let total = 2.4
     private static let revealAt = 1.72
@@ -252,7 +253,6 @@ struct LaunchSplash: View {
             }
         }
         .ignoresSafeArea()
-        .environment(\.colorScheme, .dark)
         .allowsHitTesting(!finished)
         .task {
             insets = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets ?? .zero
@@ -285,7 +285,7 @@ struct LaunchSplash: View {
         let black = 1 - Self.ease((t - Self.revealAt) / 0.42)
         let fade = 1 - Self.ease((t - 2.0) / 0.38)
         ZStack {
-            Color.black.opacity(black)
+            (scheme == .dark ? Color.black : Color.white).opacity(black)
             if split <= 0 {
                 drops(t, gather: gather).scaleEffect(breathe)
             } else {
@@ -300,9 +300,6 @@ struct LaunchSplash: View {
     private func halves(_ k: Double, _ size: CGSize) -> some View {
         let lens: CGFloat = 150
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
-        // the Dynamic Island: 126×37, 11 pt from the top, on phones whose top inset says they have one
-        let island = insets.top >= 51
-        let islandFrame = CGRect(x: c.x - 63, y: 11, width: 126, height: 37)
         // the floating dock (the tab bar) at the bottom
         let dockW = size.width - 40, dockH: CGFloat = 62
         let dockY = size.height - (insets.bottom > 0 ? 52 : 40)
@@ -314,13 +311,12 @@ struct LaunchSplash: View {
             return Color.clear
                 .frame(width: max(1, w), height: max(1, h))
                 .modifier(GlassPill())
-                .overlay { GlassLight(shape: Capsule()) }
+                .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark) }
                 .position(x: x, y: y)
         }
 
         return glassGroup {
             ZStack {
-                if island { shape(islandFrame) }
                 shape(dock)
             }
         }
@@ -338,7 +334,7 @@ struct LaunchSplash: View {
                     Color.clear
                         .frame(width: d, height: d)
                         .modifier(GlassDrop())
-                        .overlay { GlassLight(shape: Circle()).opacity(1 - 0.35 * gather) }
+                        .overlay { GlassLight(shape: Circle(), dark: scheme == .dark).opacity(1 - 0.35 * gather) }
                         .offset(x: r * cos(a), y: r * sin(a))
                 }
             }
@@ -354,20 +350,36 @@ struct LaunchSplash: View {
     }
 }
 
-/// How glass shows on black: a rim lit from the top left, a faint inner glow, edges splitting the light a little.
+/// How glass shows on a plain background: on black a rim lit from the top left and a faint inner glow, on white a
+/// rim shaded toward the bottom right and a soft drop shadow; on both the edges split the light a little.
 private struct GlassLight<S: InsettableShape>: View {
     let shape: S
+    var dark = true
+
     var body: some View {
-        ZStack {
-            shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .white.opacity(0.35)],
-                                              startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2)
-            shape.fill(RadialGradient(colors: [.white.opacity(0.09), .clear], center: UnitPoint(x: 0.35, y: 0.3),
-                                      startRadius: 0, endRadius: 90))
-            shape.stroke(Color.red.opacity(0.45), lineWidth: 1).offset(x: -1.3, y: -0.4).blur(radius: 0.6)
-            shape.stroke(Color.cyan.opacity(0.45), lineWidth: 1).offset(x: 1.3, y: 0.4).blur(radius: 0.6)
+        if dark {
+            ZStack {
+                shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .white.opacity(0.35)],
+                                                  startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2)
+                shape.fill(RadialGradient(colors: [.white.opacity(0.09), .clear], center: UnitPoint(x: 0.35, y: 0.3),
+                                          startRadius: 0, endRadius: 90))
+                shape.stroke(Color.red.opacity(0.45), lineWidth: 1).offset(x: -1.3, y: -0.4).blur(radius: 0.6)
+                shape.stroke(Color.cyan.opacity(0.45), lineWidth: 1).offset(x: 1.3, y: 0.4).blur(radius: 0.6)
+            }
+            .blendMode(.plusLighter)
+            .allowsHitTesting(false)
+        } else {
+            ZStack {
+                shape.strokeBorder(LinearGradient(colors: [.white, .black.opacity(0.08), .black.opacity(0.28)],
+                                                  startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2)
+                shape.fill(RadialGradient(colors: [.white.opacity(0.7), .clear], center: UnitPoint(x: 0.32, y: 0.28),
+                                          startRadius: 0, endRadius: 70))
+                shape.stroke(Color.red.opacity(0.3), lineWidth: 1).offset(x: -1.3, y: -0.4).blur(radius: 0.6).blendMode(.multiply)
+                shape.stroke(Color.cyan.opacity(0.35), lineWidth: 1).offset(x: 1.3, y: 0.4).blur(radius: 0.6).blendMode(.multiply)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 14, y: 8)
+            .allowsHitTesting(false)
         }
-        .blendMode(.plusLighter)
-        .allowsHitTesting(false)
     }
 }
 
