@@ -6,6 +6,15 @@ import UIKit
 enum NowPlaying {
     private static var artworkRef: String?
     private static var artwork: MPMediaItemArtwork?
+    /// While the app is on screen iOS gets no «now playing» info, so the Dynamic Island stays out of the way (as in
+    /// music apps); it comes back the moment the app is left or Control Center is pulled down.
+    private static var inApp = false
+
+    static func setInApp(_ on: Bool) {
+        guard inApp != on else { return }
+        inApp = on
+        if on { MPNowPlayingInfoCenter.default().nowPlayingInfo = nil } else { update(Player.shared) }
+    }
 
     static func setUp(_ player: Player) {
         let c = MPRemoteCommandCenter.shared()
@@ -53,8 +62,10 @@ enum NowPlaying {
         if let album = t.album { info[MPMediaItemPropertyAlbumTitle] = album }
         if p.duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = p.duration }
         if artworkRef == t.ref, let artwork { info[MPMediaItemPropertyArtwork] = artwork }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        MPNowPlayingInfoCenter.default().playbackState = p.isPlaying ? .playing : .paused
+        if !inApp {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            MPNowPlayingInfoCenter.default().playbackState = p.isPlaying ? .playing : .paused
+        }
         MPRemoteCommandCenter.shared().nextTrackCommand.isEnabled = p.hasNext || p.repeatMode == .all
 
         if artworkRef != t.ref {

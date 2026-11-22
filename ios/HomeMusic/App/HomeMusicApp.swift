@@ -30,9 +30,15 @@ struct HomeMusicApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: AppModel.shared.foreground()
-            case .background: PlayEvents.shared.flushInBackground()
-            default: break
+            case .active:
+                NowPlaying.setInApp(true)
+                AppModel.shared.foreground()
+            case .inactive:
+                NowPlaying.setInApp(false) // Control Center / the app switcher: show the track there
+            case .background:
+                NowPlaying.setInApp(false)
+                PlayEvents.shared.flushInBackground()
+            @unknown default: break
             }
         }
     }
