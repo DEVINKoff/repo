@@ -22,6 +22,10 @@ targets:
     platform: iOS
     sources:
       - HomeMusic
+      - Shared
+    dependencies:
+      - target: HomeMusicWidgets
+        embed: true
     scheme: {}
     settings:
       base:
@@ -29,6 +33,7 @@ targets:
         PRODUCT_NAME: HomeMusic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_ENTITLEMENTS: HomeMusic/HomeMusic.entitlements
     info:
       path: HomeMusic/Info.plist
       properties:
@@ -53,3 +58,20 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+  HomeMusicWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widgets
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.homemusic.ios.widgets
+        CODE_SIGN_ENTITLEMENTS: Widgets/Widgets.entitlements
+        SKIP_INSTALL: "YES"
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: HomeMusic
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

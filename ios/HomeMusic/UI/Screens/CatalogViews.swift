@@ -182,8 +182,11 @@ struct CatalogArtistView: View {
     /// Every release the catalog has for the artist (albums first, then singles and EPs, then compilations), plus the
     /// albums of the user's library that the catalog lacks, with a filter by kind.
     @ViewBuilder private func discography(_ p: ArtistPageOut) -> some View {
-        let albums = byDate(p.albums).map { release($0) } + libraryAlbums.map { release($0) }
-        let singles = byDate(p.singles).map { release($0) }
+        // a library «album» of one to six songs is a single / EP
+        let libAlbums = libraryAlbums.filter { ($0.songCount ?? 0) >= 7 }
+        let libSingles = libraryAlbums.filter { ($0.songCount ?? 0) < 7 }
+        let albums = byDate(p.albums).map { release($0) } + libAlbums.map { release($0) }
+        let singles = byDate(p.singles).map { release($0) } + libSingles.map { release($0) }
         let comps = byDate(p.compilations).map { release($0) }
         let shown: [Release] = kind == 1 ? albums : kind == 2 ? singles : kind == 3 ? comps : albums + singles + comps
         let total = albums.count + singles.count + comps.count

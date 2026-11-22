@@ -9,6 +9,7 @@ struct HomeMusicApp: App {
         Player.configureAudioSession()
         _ = SmartShuffle.shared // registers its hooks in the player
         _ = Wave.shared
+        StandByFeed.registerCommands() // the StandBy widget's ⏮ ⏯ ⏭
     }
 
     var body: some Scene {

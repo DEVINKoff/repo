@@ -52,6 +52,7 @@ enum NowPlaying {
     }
 
     static func update(_ p: Player, newTrack: Bool = false) {
+        StandByFeed.update(p)
         guard let t = p.track else { return clear() }
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: t.title,

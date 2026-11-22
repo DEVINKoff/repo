@@ -37,7 +37,7 @@ final class Lyrics {
         guard let t else { state = .idle; ref = nil; return }
         guard t.ref != ref else { return }
         ref = t.ref
-        if let hit = cache[t.ref] { state = hit; return }
+        if let hit = cache[t.ref] { state = hit; StandByFeed.update(Player.shared); return }
         state = .loading
         task?.cancel()
         let key = t.ref
@@ -45,7 +45,10 @@ final class Lyrics {
             let result = await Self.fetch(artist: t.artist, title: t.title, album: t.album, duration: t.durationS)
             guard !Task.isCancelled else { return }
             cache[key] = result
-            if ref == key { withAnimation(.smooth) { state = result } }
+            if ref == key {
+                withAnimation(.smooth) { state = result }
+                StandByFeed.update(Player.shared)
+            }
         }
     }
 
