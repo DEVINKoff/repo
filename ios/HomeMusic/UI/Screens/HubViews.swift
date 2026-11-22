@@ -137,11 +137,14 @@ struct MoreView: View {
                 }
             }
 
-            Section("Аккаунт") {
+            Section {
                 LabeledContent("Пользователь", value: app.me?.username ?? "—")
                 LabeledContent("Сервер", value: app.serverURL?.absoluteString ?? "—")
+                RemoteAddressRow()
                 Button("Сменить сервер") { app.changeServer() }
                 Button("Выйти", role: .destructive) { Task { await app.logout() } }
+            } header: { Text("Аккаунт") } footer: {
+                Text("Адрес вне дома — как открыть Хаб не из домашней сети (туннель или свой сервер, https://…). Если домашний адрес не отвечает — включён VPN на телефоне или на ПК, мобильный интернет, — приложение само переключается на него и возвращается домой, когда дом снова доступен.")
             }
 
             Section {
@@ -231,6 +234,49 @@ struct AppearanceSection: View {
                 .tint(Theme.toggle)
         } header: { Text("Оформление") } footer: {
             Text("Живые обложки — анимированные обложки альбомов из Apple Music в плеере, когда они есть у альбома.")
+        }
+    }
+}
+
+
+/// «Адрес вне дома»: shows the outside address (and whether it's in use now), edits it.
+struct RemoteAddressRow: View {
+    @Environment(AppModel.self) private var app
+    @State private var editing = false
+    @State private var text = ""
+    @State private var error: String?
+    @State private var busy = false
+
+    var body: some View {
+        Button {
+            text = app.remoteURL?.absoluteString ?? ""
+            error = nil
+            editing = true
+        } label: {
+            LabeledContent {
+                HStack(spacing: 6) {
+                    if HubClient.shared.onRemote { Image(systemName: "globe").foregroundStyle(Theme.accent) }
+                    Text(app.remoteURL?.host ?? "не задан").lineLimit(1)
+                }
+            } label: {
+                Text("Адрес вне дома").foregroundStyle(.primary)
+            }
+        }
+        .alert("Адрес вне дома", isPresented: $editing) {
+            TextField("https://…", text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            Button("Сохранить") {
+                busy = true
+                Task {
+                    if let e = await app.setRemote(text) { Toasts.error(e) } else { Toasts.success(text.isEmpty ? "Адрес вне дома убран" : "Адрес вне дома сохранён") }
+                    busy = false
+                }
+            }
+            Button("Отмена", role: .cancel) {}
+        } message: {
+            Text("Например, адрес туннеля Cloudflare или вашего сервера. Пусто — убрать.")
         }
     }
 }

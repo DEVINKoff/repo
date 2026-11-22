@@ -298,10 +298,34 @@ final class Player {
         return AVPlayerItem(asset: asset)
     }
 
+    /// Tries of the current track after a lost connection (the Hub or the network came back).
+    private var retries = 0
+    private static let retryDelays: [Double] = [1.5, 4, 9]
+
+    /// A lost connection: the same track again in a moment (from where it was), up to three times. True — retrying.
+    private func retryLater(ref: String, auto: Bool) -> Bool {
+        guard retries < Self.retryDelays.count, track?.ref == ref else { return false }
+        let delay = Self.retryDelays[retries]
+        retries += 1
+        let at = position
+        reportEnd(failed: true)
+        phase = .resolving
+        error = nil
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, self.track?.ref == ref, self.phase == .resolving else { return }
+            self.start(self.queue, at: self.index, auto: auto, position: at, retry: true)
+        }
+        return true
+    }
+
     /// `auto`: reached by the previous track ending; a track that can't be played is then skipped.
-    private func start(_ list: [QueueTrack], at i: Int, auto: Bool = false, position startAt: Double = 0, autoplay: Bool = true) {
+    /// `retry`: the same track again after a lost connection (the tries are counted, nothing is reported twice).
+    private func start(_ list: [QueueTrack], at i: Int, auto: Bool = false, position startAt: Double = 0, autoplay: Bool = true,
+                       retry: Bool = false) {
         guard list.indices.contains(i) else { return }
         let t = list[i]
+        if !retry { retries = 0 }
         reportEnd()
         // a recommendation of the smart shuffle reports under its session, the list's own songs under their list
         played = OpenPlay(ref: t.ref, context: t.rec.map { "smart:\($0.session)" } ?? listContext, launch: listLaunch,
@@ -333,6 +357,8 @@ final class Player {
                         self.pendingSeek = 0
                         _ = await self.avPlayer.seek(to: CMTime(seconds: target, preferredTimescale: 600))
                     } else if status == .failed {
+                        // the file was found but the stream broke: the connection, most likely — try again
+                        if self.info != nil, self.retryLater(ref: t.ref, auto: auto) { return }
                         if auto && self.hasNext && self.info == nil { return self.start(self.queue, at: self.index + 1, auto: true) }
                         self.failed(message)
                     }
@@ -363,6 +389,8 @@ final class Player {
                 NowPlaying.update(self)
             } catch {
                 guard let self, !(error is CancellationError), !Task.isCancelled, self.resolvingRef == ref else { return }
+                // no connection to the Hub (not «not found»): try again in a moment
+                if (error as? ApiError)?.status == 0, self.retryLater(ref: ref, auto: auto) { return }
                 if auto && self.hasNext { return self.start(self.queue, at: self.index + 1, auto: true) }
                 self.phase = .error
                 self.error = error.localizedDescription

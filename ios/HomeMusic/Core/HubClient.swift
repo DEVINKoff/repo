@@ -13,6 +13,8 @@ struct ApiError: LocalizedError, Sendable {
 }
 
 extension Notification.Name {
+    /// The app switched between the Hub's home and outside addresses.
+    static let hubRouteChanged = Notification.Name("hm.route")
     /// The Hub answered 401: the app goes back to the sign-in screen (client.ts `UNAUTHORIZED_EVENT`).
     static let hubUnauthorized = Notification.Name("hm.unauthorized")
 }
@@ -23,9 +25,56 @@ final class HubClient: @unchecked Sendable {
 
     private let lock = NSLock()
     private var _base: URL?
+    /// The address requests go to now: the home one, or the outside one while home can't be reached.
     var baseURL: URL? {
         get { lock.withLock { _base } }
         set { lock.withLock { _base = newValue } }
+    }
+    private var _home: URL?
+    private var _remote: URL?
+    /// The Hub on the home network (what the user typed first).
+    var homeURL: URL? {
+        get { lock.withLock { _home } }
+        set { lock.withLock { _home = newValue; _base = newValue } }
+    }
+    /// The Hub from outside (a tunnel or the gateway): used when the home address doesn't answer — a VPN on the
+    /// phone or the PC, mobile data.
+    var remoteURL: URL? {
+        get { lock.withLock { _remote } }
+        set { lock.withLock { _remote = newValue } }
+    }
+    var onRemote: Bool { baseURL != nil && baseURL == remoteURL && remoteURL != homeURL }
+
+    /// The other address than the one in use, if there is one.
+    private var alternate: URL? {
+        lock.withLock {
+            guard let b = _base else { return nil }
+            if b == _home { return _remote.flatMap { $0 == b ? nil : $0 } }
+            return _home.flatMap { $0 == b ? nil : $0 }
+        }
+    }
+
+    /// Switches to `url`, taking the session cookie along (the account stays signed in on both addresses).
+    func use(_ url: URL) {
+        if let from = baseURL, from != url { copySession(from: from, to: url) }
+        baseURL = url
+        NotificationCenter.default.post(name: .hubRouteChanged, object: nil)
+    }
+
+    private func copySession(from: URL, to: URL) {
+        guard let c = HTTPCookieStorage.shared.cookies(for: from)?.first(where: { $0.name == "hm_session" }), let host = to.host else { return }
+        var props: [HTTPCookiePropertyKey: Any] = [.name: c.name, .value: c.value, .domain: host, .path: "/"]
+        if let e = c.expiresDate { props[.expires] = e }
+        if to.scheme == "https" { props[.secure] = "TRUE" }
+        if let copy = HTTPCookie(properties: props) { HTTPCookieStorage.shared.setCookie(copy) }
+    }
+
+    /// Back home when home answers again (called when the app comes to the front).
+    func preferHome() async {
+        guard let home = homeURL, baseURL != home else { return }
+        var req = URLRequest(url: home.appendingPathComponent("healthz"))
+        req.timeoutInterval = 2.5
+        if let res = try? await session.data(for: req), (res.1 as? HTTPURLResponse)?.statusCode == 200 { use(home) }
     }
 
     let session: URLSession
@@ -114,6 +163,24 @@ final class HubClient: @unchecked Sendable {
 
     func raw(_ method: String, _ path: String, query: [String: String?] = [:], body: Data? = nil,
              contentType: String? = "application/json", timeout: TimeInterval? = nil) async throws -> (Data, HTTPURLResponse) {
+        do {
+            return try await rawOnce(method, path, query: query, body: body, contentType: contentType, timeout: timeout)
+        } catch let e as ApiError where e.status == 0 {
+            // no connection: the other address (home ↔ outside), once; it stays in use if it answers
+            guard let other = alternate else { throw e }
+            let from = baseURL
+            use(other)
+            do {
+                return try await rawOnce(method, path, query: query, body: body, contentType: contentType, timeout: timeout.map { min($0, 15) })
+            } catch let e2 as ApiError where e2.status == 0 {
+                if let from { baseURL = from }
+                throw e2
+            }
+        }
+    }
+
+    private func rawOnce(_ method: String, _ path: String, query: [String: String?], body: Data?,
+                         contentType: String?, timeout: TimeInterval?) async throws -> (Data, HTTPURLResponse) {
         guard let url = url(path, query) else { throw ApiError(status: 0, message: "Сервер не выбран") }
         var req = URLRequest(url: url)
         req.httpMethod = method
@@ -123,6 +190,8 @@ final class HubClient: @unchecked Sendable {
             if let contentType { req.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         }
         if let timeout { req.timeoutInterval = timeout }
+        // the home address answers within seconds or not at all (a VPN swallows it): don't hang on it for a minute
+        else if alternate != nil && baseURL == homeURL { req.timeoutInterval = 8 }
         let data: Data
         let response: URLResponse
         do {

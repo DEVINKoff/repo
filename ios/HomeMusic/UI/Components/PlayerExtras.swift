@@ -235,9 +235,10 @@ struct CinematicPlayer: View {
             let h = g.size.height
             let w = g.size.width
             let barH: CGFloat = 96
-            let upper = h - barH
-            let art = min(upper * 0.9, w * 0.34)
-            VStack(spacing: 0) {
+            // the bar gone, the cover and the lyrics zoom into its room
+            let upper = controls ? h - barH : h - 8
+            let art = min(upper * 0.9, w * (controls ? 0.34 : 0.4))
+            ZStack(alignment: .bottom) {
                 HStack(alignment: .center, spacing: w * 0.045) {
                     LiveCover(track: track, size: art, corner: art * 0.07, playing: player.isPlaying)
                         .shadow(color: .black.opacity(0.45), radius: 26, y: 14)
@@ -274,15 +275,18 @@ struct CinematicPlayer: View {
                     .frame(maxWidth: .infinity, maxHeight: upper)
                 }
                 .frame(height: upper)
+                .frame(maxHeight: .infinity, alignment: .top)
                 CinematicBar(liked: stars.isLiked(.track(track)), like: {
                     Task { await stars.toggle(.track(track), context: player.context) }
                 }, poke: poke)
                 .frame(height: barH)
                 .opacity(controls ? 1 : 0)
-                .offset(y: controls ? 0 : 12)
+                .offset(y: controls ? 0 : 30)
+                .blur(radius: controls ? 0 : 6)
                 .allowsHitTesting(controls)
             }
             .frame(width: w, height: h)
+            .animation(.spring(response: 0.7, dampingFraction: 0.88), value: controls)
             .animation(.smooth(duration: 0.5), value: track.uid)
         }
         // clear of the screen's rounded corners and the camera

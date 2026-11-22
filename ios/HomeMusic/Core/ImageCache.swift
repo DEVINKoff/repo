@@ -81,9 +81,18 @@ struct Cover: View {
             guard let u = resolved else { image = nil; return }
             if let hit = ImageCache.shared.cached(u, px: px) { image = hit; return }
             // keep showing the previous image until the new one is ready (no flash between tracks)
-            var loaded = await ImageCache.shared.image(u, px: px)
-            if loaded == nil, let f = HubClient.shared.absolute(fallback) { loaded = await ImageCache.shared.image(f, px: px) }
-            if let loaded { withAnimation(.easeOut(duration: 0.2)) { image = loaded } }
+            // a cover that didn't come (no connection for a moment) is asked again, a few times, while on screen
+            for delay in [0.0, 2, 5, 12, 30] {
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                if Task.isCancelled { return }
+                let src = resolved ?? u // the Hub may have moved to its other address meanwhile
+                var loaded = await ImageCache.shared.image(src, px: px)
+                if loaded == nil, let f = HubClient.shared.absolute(fallback) { loaded = await ImageCache.shared.image(f, px: px) }
+                if let loaded {
+                    withAnimation(.easeOut(duration: 0.2)) { image = loaded }
+                    return
+                }
+            }
         }
     }
 }

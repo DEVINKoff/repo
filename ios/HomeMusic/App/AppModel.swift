@@ -22,12 +22,19 @@ final class AppModel {
     var playerOpen = false
 
     private let serverKey = "hm-hub-url"
+    private let remoteKey = "hm-hub-remote-url"
+    /// The Hub's address from outside the home network (optional).
+    private(set) var remoteURL: URL?
 
     private init() {
         if let s = Persist.defaults.string(forKey: serverKey), let url = URL(string: s) {
             serverURL = url
-            HubClient.shared.baseURL = url
+            HubClient.shared.homeURL = url
             stage = .checking
+        }
+        if let s = Persist.defaults.string(forKey: remoteKey), let url = URL(string: s) {
+            remoteURL = url
+            HubClient.shared.remoteURL = url
         }
         NotificationCenter.default.addObserver(forName: .hubUnauthorized, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
@@ -69,8 +76,8 @@ final class AppModel {
 
     func chooseServer(_ input: String) async -> String? {
         guard let url = Self.normalize(input) else { return "Укажите IP или имя своего ПК" }
-        let previous = HubClient.shared.baseURL
-        HubClient.shared.baseURL = url
+        let previous = HubClient.shared.homeURL
+        HubClient.shared.homeURL = url
         do {
             _ = try await HubClient.shared.health()
             authOptions = try? await HubClient.shared.authOptions()
@@ -80,7 +87,7 @@ final class AppModel {
             stage = .login
             return nil
         } catch {
-            HubClient.shared.baseURL = previous
+            HubClient.shared.homeURL = previous
             return "Хаб не отвечает по адресу \(url.absoluteString). Проверьте, что ПК включён, HomeMusic запущен, а телефон в той же сети."
         }
     }
@@ -163,7 +170,30 @@ final class AppModel {
         }
     }
 
+    /// Sets (or, with an empty input, removes) the outside address; it must answer as a Hub.
+    func setRemote(_ input: String) async -> String? {
+        let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.isEmpty {
+            remoteURL = nil
+            HubClient.shared.remoteURL = nil
+            Persist.defaults.removeObject(forKey: remoteKey)
+            if let home = serverURL, HubClient.shared.baseURL != home { HubClient.shared.use(home) }
+            return nil
+        }
+        guard let url = Self.normalize(s.contains("://") ? s : "https://" + s) else { return "Неверный адрес" }
+        var req = URLRequest(url: url.appendingPathComponent("healthz"))
+        req.timeoutInterval = 10
+        guard let res = try? await HubClient.shared.session.data(for: req), (res.1 as? HTTPURLResponse)?.statusCode == 200 else {
+            return "Хаб не отвечает по адресу \(url.absoluteString)"
+        }
+        remoteURL = url
+        HubClient.shared.remoteURL = url
+        Persist.defaults.set(url.absoluteString, forKey: remoteKey)
+        return nil
+    }
+
     func foreground() {
+        Task { await HubClient.shared.preferHome() }
         guard stage == .ready else { return }
         HubEvents.shared.start()
         Stars.shared.refresh()

@@ -42,13 +42,20 @@ final class Lyrics {
         task?.cancel()
         let key = t.ref
         task = Task {
-            let result = await Self.fetch(artist: t.artist, title: t.title, album: t.album, duration: t.durationS)
-            guard !Task.isCancelled else { return }
-            cache[key] = result
-            if ref == key {
-                withAnimation(.smooth) { state = result }
-                StandByFeed.update(Player.shared)
+            // LRCLIB unreachable for a moment: asked again a few times; only a real answer is kept for the session
+            for delay in [0.0, 3, 8, 20, 45] {
+                if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                guard !Task.isCancelled, ref == key else { return }
+                let (result, sure) = await Self.fetchChecked(artist: t.artist, title: t.title, album: t.album, duration: t.durationS)
+                guard !Task.isCancelled else { return }
+                if sure { cache[key] = result }
+                if ref == key, sure || delay == 45 || state == .loading && result != .missing {
+                    withAnimation(.smooth) { state = result }
+                    StandByFeed.update(Player.shared)
+                }
+                if sure { return }
             }
+            if ref == key, state == .loading { withAnimation(.smooth) { state = .missing } }
         }
     }
 
@@ -77,12 +84,26 @@ final class Lyrics {
         return URLSession(configuration: c)
     }()
 
+    /// Set when a request of the current fetch didn't get an answer (no connection, a server error): its «nothing
+    /// found» isn't sure.
+    private static var unsure = false
+
     private static func get<T: Decodable>(_ path: String, _ query: [String: String?]) async -> T? {
         var c = URLComponents(string: "https://lrclib.net/api/" + path)!
         c.queryItems = query.compactMap { k, v in v.flatMap { $0.isEmpty ? nil : URLQueryItem(name: k, value: $0) } }
-        guard let url = c.url, let result = try? await session.data(from: url),
-              (result.1 as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        guard let url = c.url else { return nil }
+        guard let result = try? await session.data(from: url) else { unsure = true; return nil }
+        let code = (result.1 as? HTTPURLResponse)?.statusCode ?? 0
+        if code != 200 && code != 404 { unsure = true }
+        guard code == 200 else { return nil }
         return try? JSONDecoder().decode(T.self, from: result.0)
+    }
+
+    /// `fetch`, and whether its answer is sure (every request answered).
+    static func fetchChecked(artist: String, title: String, album: String?, duration: Double?) async -> (State, Bool) {
+        unsure = false
+        let state = await fetch(artist: artist, title: title, album: album, duration: duration)
+        return (state, !unsure || state != .missing)
     }
 
     /// «Title (feat. X) [Remix]» → «Title»; «A, B» → «A» (LRCLIB names the main artist).
