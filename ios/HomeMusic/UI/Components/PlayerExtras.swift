@@ -218,8 +218,8 @@ struct TrackInfoSection: View {
 // MARK: - Cinematic mode (the phone sideways)
 
 /// Full-bleed: the cover's colours fill the screen, the cover (animated where it can be) on the left, the title and
-/// the sung line on the right. The controls fade away after a few seconds; a tap brings them back. The screen
-/// stays on.
+/// the sung line on the right. Every size follows the screen's height. The controls float over the bottom, fade
+/// away after a few seconds and come back with a tap. The screen stays on.
 struct CinematicPlayer: View {
     let track: QueueTrack
     let size: CGSize
@@ -230,79 +230,83 @@ struct CinematicPlayer: View {
     @State private var hide: Task<Void, Never>?
 
     var body: some View {
-        let art = min(size.height * 0.74, size.width * 0.42)
-        ZStack {
-            Cover(url: track.coverUrl ?? track.coverSmallUrl, size: max(size.width, size.height), corner: 0, pixels: 200)
-                .frame(width: size.width, height: size.height)
-                .scaleEffect(1.3)
-                .blur(radius: 70, opaque: true)
-                .saturation(1.4)
-                .overlay(Color.black.opacity(0.45))
-                .clipped()
-                .ignoresSafeArea()
-                .animation(.easeInOut(duration: 1), value: track.uid)
-
-            HStack(spacing: 44) {
-                LiveCover(track: track, size: art, corner: 22, playing: player.isPlaying)
-                    .shadow(color: .black.opacity(0.5), radius: 30, y: 14)
-                    .scaleEffect(player.isPlaying ? 1 : 0.92)
-                    .animation(.spring(response: 0.6, dampingFraction: 0.7), value: player.isPlaying)
-                    .id(track.uid)
-                    .transition(.scale(scale: 0.85).combined(with: .blurFade))
-                VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(track.title).font(.display(28, .heavy)).lineLimit(2)
-                        Text(track.artist).font(.title3.weight(.medium)).opacity(0.7).lineLimit(1)
-                    }
-                    .id(track.uid)
-                    .transition(.blurFade)
-                    CinematicLyric()
-                        .frame(maxHeight: .infinity, alignment: .center)
-                    VStack(spacing: 12) {
-                        Scrubber()
-                        HStack(spacing: 34) {
-                            Button { player.prev(); poke() } label: { Image(systemName: "backward.fill").font(.title2) }
-                            Button { player.toggle(); poke() } label: {
-                                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 30, weight: .semibold))
-                                    .contentTransition(.symbolEffect(.replace))
-                                    .frame(width: 60, height: 60)
-                            }
-                            .glassCircle()
-                            Button { player.next(); poke() } label: { Image(systemName: "forward.fill").font(.title2) }
+        GeometryReader { g in
+            let h = g.size.height
+            let w = g.size.width
+            let art = min(h * 0.66, w * 0.36)
+            ZStack {
+                CinematicBackdrop(url: track.coverUrl ?? track.coverSmallUrl)
+                HStack(alignment: .center, spacing: w * 0.05) {
+                    LiveCover(track: track, size: art, corner: art * 0.08, playing: player.isPlaying)
+                        .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
+                        .scaleEffect(player.isPlaying ? 1 : 0.94)
+                        .animation(.spring(response: 0.6, dampingFraction: 0.7), value: player.isPlaying)
+                        .id(track.uid)
+                        .transition(.scale(scale: 0.9).combined(with: .blurFade))
+                    VStack(alignment: .leading, spacing: h * 0.03) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(track.title)
+                                .font(.system(size: min(26, h * 0.07), weight: .heavy).width(.expanded))
+                                .lineLimit(1).minimumScaleFactor(0.6)
+                            Text(track.artist)
+                                .font(.system(size: min(17, h * 0.045), weight: .medium))
+                                .opacity(0.7).lineLimit(1)
                         }
-                        .buttonStyle(.pressable)
-                        .frame(maxWidth: .infinity)
+                        .id(track.uid)
+                        .transition(.blurFade)
+                        CinematicLyric(size: min(26, h * 0.068))
+                            .frame(maxWidth: .infinity, maxHeight: h * 0.42, alignment: .topLeading)
+                            .clipped()
                     }
-                    .opacity(controls ? 1 : 0)
-                    .offset(y: controls ? 0 : 20)
-                    .allowsHitTesting(controls)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 40)
-            .padding(.vertical, 22)
-            .animation(.spring(response: 0.55, dampingFraction: 0.85), value: track.uid)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.bottom, controls ? h * 0.2 : 0)
+                .animation(.spring(response: 0.55, dampingFraction: 0.85), value: track.uid)
 
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: rotateBack) {
-                        Image(systemName: "arrow.down.right.and.arrow.up.left").font(.headline).frame(width: 40, height: 40)
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button(action: rotateBack) {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left").font(.headline).frame(width: 38, height: 38)
+                        }
+                        .glassCircle()
+                        .buttonStyle(.plain)
                     }
-                    .glassCircle()
-                    .buttonStyle(.plain)
+                    Spacer()
+                    HStack(spacing: 22) {
+                        Button { player.prev(); poke() } label: { Image(systemName: "backward.fill").font(.title3) }
+                        Button { player.toggle(); poke() } label: {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 22, weight: .semibold))
+                                .contentTransition(.symbolEffect(.replace))
+                                .frame(width: 46, height: 46)
+                        }
+                        .glassCircle()
+                        Button { player.next(); poke() } label: { Image(systemName: "forward.fill").font(.title3) }
+                        Scrubber()
+                            .frame(maxWidth: .infinity)
+                            .simultaneousGesture(TapGesture().onEnded { poke() })
+                    }
+                    .buttonStyle(.pressable)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 8)
+                    .glassCapsule()
                 }
-                Spacer()
+                .opacity(controls ? 1 : 0)
+                .offset(y: controls ? 0 : 16)
+                .allowsHitTesting(controls)
             }
-            .padding(18)
-            .opacity(controls ? 1 : 0)
-            .allowsHitTesting(controls)
+            .frame(width: w, height: h)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .contentShape(Rectangle())
-        .onTapGesture { withAnimation(.smooth) { controls.toggle() }; if controls { poke() } }
+        .onTapGesture {
+            if controls { withAnimation(.smooth) { controls = false } } else { poke() }
+        }
         .animation(.smooth(duration: 0.4), value: controls)
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
@@ -319,7 +323,7 @@ struct CinematicPlayer: View {
 
     /// Shows the controls and hides them again after a few seconds.
     private func poke() {
-        controls = true
+        withAnimation(.smooth) { controls = true }
         hide?.cancel()
         hide = Task {
             try? await Task.sleep(for: .seconds(4))
@@ -329,8 +333,36 @@ struct CinematicPlayer: View {
     }
 }
 
-/// The sung line, large, with the next one dimmed below it; lines rise in and out.
+/// The cover blown up and blurred behind everything, darkened, filling the whole screen.
+private struct CinematicBackdrop: View {
+    let url: String?
+    @State private var image: UIImage?
+
+    var body: some View {
+        Color.black
+            .overlay {
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill()
+                        .blur(radius: 50, opaque: true)
+                        .saturation(1.4)
+                        .scaleEffect(1.25)
+                        .transition(.opacity)
+                }
+            }
+            .overlay(Color.black.opacity(0.45))
+            .clipped()
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+            .task(id: url) {
+                guard let u = HubClient.shared.absolute(url) else { return }
+                if let img = await ImageCache.shared.image(u, px: 256) { withAnimation(.easeInOut(duration: 0.8)) { image = img } }
+            }
+    }
+}
+
+/// The sung line, with the next one dimmed below it; lines rise in and out.
 struct CinematicLyric: View {
+    var size: CGFloat = 26
     @Environment(Player.self) private var player
     @Environment(Lyrics.self) private var lyrics
 
@@ -339,21 +371,27 @@ struct CinematicLyric: View {
            let id = Lyrics.current(lines, at: player.position),
            let i = lines.firstIndex(where: { $0.id == id }) {
             let line = lines[i]
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: size * 0.4) {
                 Group {
-                    if line.words.isEmpty { Text(line.text.isEmpty ? "♪" : line.text).font(LyricsStyle.font) } else { SungLine(line: line) }
+                    if line.words.isEmpty {
+                        Text(line.text.isEmpty ? "♪" : line.text).font(.system(size: size, weight: .heavy))
+                    } else {
+                        SungLine(line: line, size: size)
+                    }
                 }
                 .id(line.id)
                 .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade),
                                         removal: .move(edge: .top).combined(with: .blurFade)))
                 if i + 1 < lines.count {
-                    Text(lines[i + 1].text).font(.title3.weight(.bold)).opacity(0.35).lineLimit(2)
+                    Text(lines[i + 1].text).font(.system(size: size * 0.62, weight: .bold)).opacity(0.35).lineLimit(1)
                         .id("next-\(line.id)")
                         .transition(.blurFade)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .animation(.spring(response: 0.6, dampingFraction: 0.86), value: line.id)
+        } else if case .plain = lyrics.state {
+            Text("Текст без синхронизации").font(.footnote).opacity(0.4)
         } else {
             Color.clear.frame(height: 1)
         }

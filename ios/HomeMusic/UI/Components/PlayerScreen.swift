@@ -11,6 +11,7 @@ struct PlayerView: View {
     @Environment(Wave.self) private var wave
     @Environment(\.dismiss) private var dismiss
     @State private var mode: Mode = .cover
+    @State private var isLandscape = false
     /// the artists of a track with several, to pick which one to open
     @State private var artistChoice: [QueueTrack.Artist] = []
 
@@ -59,6 +60,8 @@ struct PlayerView: View {
         }
         .presentationBackground(Color(.systemBackground))
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isLandscape)
+        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height * 1.15 } action: { isLandscape = $0 }
     }
 
     /// The first screen of the player (the rest is below it).

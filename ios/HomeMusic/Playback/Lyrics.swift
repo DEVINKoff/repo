@@ -330,14 +330,15 @@ enum LyricsStyle {
 /// Every effect eases over time (no step at a word's start or end), redrawn at the screen's rate (120 Hz on ProMotion).
 struct SungLine: View {
     let line: Lyrics.Line
+    var size: CGFloat = 30
     @Environment(Player.self) private var player
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 120, paused: !player.isPlaying)) { _ in
             let t = player.liveTime
-            FlowLayout(spacing: LyricsStyle.wordSpacing, lineSpacing: LyricsStyle.lineSpacing) {
+            FlowLayout(spacing: LyricsStyle.wordSpacing * size / 30, lineSpacing: LyricsStyle.lineSpacing) {
                 ForEach(Array(line.words.enumerated()), id: \.offset) { _, w in
-                    SungWord(word: w.text, time: t, start: w.start, end: w.end)
+                    SungWord(word: w.text, time: t, start: w.start, end: w.end, size: size)
                 }
             }
         }
@@ -349,6 +350,7 @@ struct SungWord: View {
     let time: Double
     let start: Double
     let end: Double
+    var size: CGFloat = 30
 
     private static func clamp(_ x: Double) -> Double { min(1, max(0, x)) }
     private static func ease(_ x: Double) -> Double { let c = clamp(x); return c * c * (3 - 2 * c) }
@@ -360,11 +362,11 @@ struct SungWord: View {
         // the lift and the glow: rise just before the word, settle slowly after it
         let env = Self.ease((time - start + 0.1) / 0.28) * Self.ease(1 - (time - end) / 0.55)
         Text(word)
-            .font(LyricsStyle.font)
+            .font(.system(size: size, weight: .heavy))
             .foregroundStyle(Color.primary.opacity(0.32))
             .overlay(alignment: .leading) {
                 Text(word)
-                    .font(LyricsStyle.font)
+                    .font(.system(size: size, weight: .heavy))
                     .foregroundStyle(.primary)
                     .mask(alignment: .leading) {
                         LinearGradient(stops: [.init(color: .black, location: 0),
