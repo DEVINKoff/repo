@@ -84,6 +84,7 @@ struct CatalogArtistView: View {
     @State private var error: String?
     @State private var allTop = false
     @State private var kind = 0
+    @State private var libraryAlbums: [NdAlbumOut] = []
 
     var body: some View {
         Loading(value: page, error: error, retry: { Task { await load(fresh: true) } }) { p in
@@ -154,27 +155,52 @@ struct CatalogArtistView: View {
         .task { await load() }
     }
 
-    /// Every release the catalog has for the artist, newest first, with a filter by kind.
+    /// A tile of the discography: a catalog release, or an album of the user's own library the catalog lacks.
+    private struct Release: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String
+        let cover: String?
+        let dest: Dest
+        let badge: String?
+    }
+
+    private func release(_ a: AlbumOut) -> Release {
+        Release(id: a.ref, title: a.title,
+                subtitle: [a.displayYear.map(String.init), kindTitle(a.recordType)].compactMap { $0 }.joined(separator: " · "),
+                cover: a.coverSmallUrl ?? a.coverUrl, dest: .catalogAlbum(a.ref),
+                badge: a.ownedStatus == "full" ? "в библиотеке" : a.ownedStatus == "partial" ? "частично" : nil)
+    }
+
+    private func release(_ a: NdAlbumOut) -> Release {
+        Release(id: "nd:" + a.id, title: a.title, subtitle: [a.year.map(String.init), "из библиотеки"].compactMap { $0 }.joined(separator: " · "),
+                cover: a.coverUrl, dest: .ndAlbum(a.id), badge: "в библиотеке")
+    }
+
+    private func byDate(_ list: [AlbumOut]) -> [AlbumOut] { list.sorted { ($0.releaseDate ?? "") > ($1.releaseDate ?? "") } }
+
+    /// Every release the catalog has for the artist (albums first, then singles and EPs, then compilations), plus the
+    /// albums of the user's library that the catalog lacks, with a filter by kind.
     @ViewBuilder private func discography(_ p: ArtistPageOut) -> some View {
-        let all = (p.albums + p.singles + p.compilations).sorted { ($0.releaseDate ?? "") > ($1.releaseDate ?? "") }
-        let shown = filtered(p, all)
-        if !all.isEmpty {
+        let albums = byDate(p.albums).map { release($0) } + libraryAlbums.map { release($0) }
+        let singles = byDate(p.singles).map { release($0) }
+        let comps = byDate(p.compilations).map { release($0) }
+        let shown: [Release] = kind == 1 ? albums : kind == 2 ? singles : kind == 3 ? comps : albums + singles + comps
+        let total = albums.count + singles.count + comps.count
+        if total > 0 {
             VStack(alignment: .leading, spacing: 14) {
-                SectionTitle(text: "Дискография · \(all.count)")
+                SectionTitle(text: "Дискография · \(total)")
                 Picker("", selection: $kind.animation(Theme.spring)) {
                     Text("Все").tag(0)
-                    if !p.albums.isEmpty { Text("Альбомы").tag(1) }
-                    if !p.singles.isEmpty { Text("Синглы").tag(2) }
-                    if !p.compilations.isEmpty { Text("Сборники").tag(3) }
+                    if !albums.isEmpty { Text("Альбомы · \(albums.count)").tag(1) }
+                    if !singles.isEmpty { Text("Синглы · \(singles.count)").tag(2) }
+                    if !comps.isEmpty { Text("Сборники").tag(3) }
                 }
                 .pickerStyle(.segmented)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 20) {
-                    ForEach(Array(shown.enumerated()), id: \.element.ref) { _, a in
-                        NavigationLink(value: Dest.catalogAlbum(a.ref)) {
-                            AlbumCard(title: a.title,
-                                      subtitle: [a.displayYear.map(String.init), kindTitle(a.recordType)].compactMap { $0 }.joined(separator: " · "),
-                                      cover: a.coverSmallUrl ?? a.coverUrl, width: 160,
-                                      badge: a.ownedStatus == "full" ? "в библиотеке" : a.ownedStatus == "partial" ? "частично" : nil)
+                    ForEach(shown) { r in
+                        NavigationLink(value: r.dest) {
+                            AlbumCard(title: r.title, subtitle: r.subtitle, cover: r.cover, width: 160, badge: r.badge)
                         }
                         .buttonStyle(.pressable)
                         .transition(.scale(scale: 0.9).combined(with: .opacity))
@@ -185,13 +211,19 @@ struct CatalogArtistView: View {
         }
     }
 
-    private func filtered(_ p: ArtistPageOut, _ all: [AlbumOut]) -> [AlbumOut] {
-        switch kind {
-        case 1: return p.albums
-        case 2: return p.singles
-        case 3: return p.compilations
-        default: return all
+    /// The user's library albums of this artist (any spelling) that the catalog doesn't list.
+    private func loadLibraryAlbums(_ p: ArtistPageOut) async {
+        let who = Norm.key(p.artist.name)
+        guard !who.isEmpty, let artists = try? await HubClient.shared.ndArtists() else { return }
+        let known = Set((p.albums + p.singles + p.compilations).map { Norm.key($0.title) })
+        var found: [NdAlbumOut] = []
+        for a in artists where Norm.key(a.name) == who {
+            guard let page = try? await HubClient.shared.ndArtist(a.id) else { continue }
+            for al in page.albums where !known.contains(Norm.key(al.title)) && !found.contains(where: { Norm.key($0.title) == Norm.key(al.title) }) {
+                found.append(al)
+            }
         }
+        withAnimation(Theme.spring) { libraryAlbums = found }
     }
 
     private func kindTitle(_ t: String?) -> String? {
@@ -204,6 +236,11 @@ struct CatalogArtistView: View {
     }
 
     private func load(fresh: Bool = false) async {
-        do { page = try await HubClient.shared.artist(ref, fresh: fresh); error = nil } catch { self.error = error.localizedDescription }
+        do {
+            let p = try await HubClient.shared.artist(ref, fresh: fresh)
+            page = p
+            error = nil
+            await loadLibraryAlbums(p)
+        } catch { self.error = error.localizedDescription }
     }
 }
