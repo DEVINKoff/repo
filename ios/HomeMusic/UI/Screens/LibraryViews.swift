@@ -83,8 +83,58 @@ struct LikedView: View {
     @State private var liked: NdLikedOut?
     @State private var error: String?
     @State private var part: Part = .songs
+    @AppStorage("liked.sort") private var sort: LikedSort = .added
+    /// only the songs whose album has an animated cover on Apple Music
+    @State private var onlyLive = false
+    @State private var live: Set<String> = []
+    @State private var checked = 0
+    @State private var toCheck = 0
 
     private let page = SmartPage(context: "liked", title: nil)
+
+    private func shown(_ songs: [Track]) -> [Track] {
+        var list: [Track]
+        switch sort {
+        case .added: list = songs
+        case .oldest: list = songs.reversed()
+        case .title: list = songs.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+        case .artist:
+            list = songs.sorted {
+                let c = $0.artistLine.localizedStandardCompare($1.artistLine)
+                return c == .orderedSame ? $0.title.localizedStandardCompare($1.title) == .orderedAscending : c == .orderedAscending
+            }
+        case .album: list = songs.sorted { ($0.albumTitle ?? "").localizedStandardCompare($1.albumTitle ?? "") == .orderedAscending }
+        case .year: list = songs.sorted { ($0.year ?? 0) > ($1.year ?? 0) }
+        case .length: list = songs.sorted { ($0.durationS ?? 0) < ($1.durationS ?? 0) }
+        }
+        if onlyLive { list = list.filter { live.contains(MotionCovers.key(QueueTrack($0))) } }
+        return list
+    }
+
+    /// Asks the Hub which albums of the liked songs have an animated cover (once per album, a few at a time).
+    private func checkLive(_ songs: [Track]) async {
+        var byKey: [String: QueueTrack] = [:]
+        for t in songs { let q = QueueTrack(t); byKey[MotionCovers.key(q)] = byKey[MotionCovers.key(q)] ?? q }
+        let todo = Array(byKey.values)
+        toCheck = todo.count
+        checked = 0
+        await withTaskGroup(of: (String, Bool).self) { group in
+            var next = 0
+            func add() {
+                guard next < todo.count else { return }
+                let q = todo[next]
+                next += 1
+                group.addTask { (await MotionCovers.key(q), await MotionCovers.url(for: q) != nil) }
+            }
+            for _ in 0..<4 { add() }
+            for await (key, has) in group {
+                checked += 1
+                if has { withAnimation(.smooth) { _ = live.insert(key) } }
+                if Task.isCancelled { group.cancelAll(); return }
+                add()
+            }
+        }
+    }
 
     var body: some View {
         Loading(value: liked, error: error, retry: { Task { await load() } }) { l in
@@ -97,12 +147,20 @@ struct LikedView: View {
                     if l.songs.isEmpty {
                         ContentUnavailableView("Пока пусто", systemImage: "heart", description: Text("Отмечайте песни ♥ — они появятся здесь"))
                     } else {
+                        let songs = shown(l.songs)
                         PlayShuffleButtons(
-                            play: { player.listenAll(l.songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
-                            shuffle: { player.listenAll(l.songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
+                            play: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
+                            shuffle: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
                             .listRowSeparator(.hidden)
-                        ForEach(Array(l.songs.enumerated()), id: \.offset) { i, t in
-                            TrackRow(track: t, list: l.songs, context: "liked", origin: "liked", smartPage: page, order: i)
+                        songsBar(l.songs)
+                            .listRowSeparator(.hidden)
+                        if onlyLive && songs.isEmpty && checked >= toCheck {
+                            ContentUnavailableView("Нет живых обложек", systemImage: "livephoto.slash",
+                                                   description: Text("Ни у одного альбома понравившихся песен нет анимированной обложки в Apple Music"))
+                        }
+                        ForEach(Array(songs.enumerated()), id: \.element.ref) { i, t in
+                            TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: i)
+                                .transition(.opacity.combined(with: .move(edge: .top)))
                         }
                     }
                 case .albums:
@@ -123,6 +181,9 @@ struct LikedView: View {
             .listStyle(.plain)
         }
         .navigationTitle("Понравившиеся")
+        .animation(.smooth(duration: 0.35), value: sort)
+        .animation(.smooth(duration: 0.35), value: onlyLive)
+        .task(id: onlyLive) { if onlyLive, let l = liked { await checkLive(l.songs) } }
         .task(id: library.generation) { await load() }
         .onChange(of: stars.version) { Task { try? await Task.sleep(for: .seconds(1.5)); await load() } }
         .refreshable { await load() }
@@ -130,6 +191,81 @@ struct LikedView: View {
 
     private func load() async {
         do { liked = try await HubClient.shared.ndLiked(); error = nil } catch { self.error = error.localizedDescription }
+    }
+
+    /// The sort menu and the «live covers only» switch above the songs.
+    private func songsBar(_ all: [Track]) -> some View {
+        HStack(spacing: 10) {
+            Menu {
+                Picker("Сортировка", selection: $sort) {
+                    ForEach(LikedSort.allCases) { Label($0.title, systemImage: $0.icon).tag($0) }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.arrow.down")
+                    Text(sort.title).lineLimit(1)
+                }
+                .font(.subheadline.weight(.medium))
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .glassCapsule(interactive: true)
+            }
+            Button {
+                onlyLive.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: onlyLive ? "livephoto" : "livephoto.slash")
+                        .contentTransition(.symbolEffect(.replace))
+                    Text("Живые обложки")
+                    if onlyLive && checked < toCheck {
+                        ProgressView().controlSize(.mini)
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(onlyLive ? Theme.onAccent : .primary)
+                .padding(.horizontal, 14)
+                .frame(height: 34)
+                .glassCapsule(interactive: true, tint: onlyLive ? Theme.accent : nil)
+            }
+            .buttonStyle(.pressable)
+            .sensoryFeedback(.selection, trigger: onlyLive)
+            Spacer(minLength: 0)
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottomLeading) {
+            if onlyLive && checked < toCheck {
+                Text("Проверено альбомов: \(checked) из \(toCheck)").font(.caption2).foregroundStyle(.secondary)
+                    .offset(y: 18)
+            }
+        }
+        .padding(.bottom, onlyLive && checked < toCheck ? 14 : 0)
+    }
+}
+
+enum LikedSort: String, CaseIterable, Identifiable {
+    case added, oldest, title, artist, album, year, length
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .added: "Недавно добавленные"
+        case .oldest: "Сначала старые"
+        case .title: "По названию"
+        case .artist: "По исполнителю"
+        case .album: "По альбому"
+        case .year: "По году"
+        case .length: "По длительности"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .added: "clock"
+        case .oldest: "clock.arrow.circlepath"
+        case .title: "textformat"
+        case .artist: "music.microphone"
+        case .album: "square.stack"
+        case .year: "calendar"
+        case .length: "timer"
+        }
     }
 }
 
