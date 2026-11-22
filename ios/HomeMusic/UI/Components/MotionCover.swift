@@ -75,30 +75,47 @@ enum MotionCovers {
     }
 }
 
-/// The animated cover's current colours: a tiny frame of the playing video, for the backgrounds behind it.
+/// The animated cover's current colours: a 3×3 grid of them, from the playing video, eased toward each new frame
+/// (the backgrounds draw them as a mesh gradient, so they flow instead of flashing).
 @MainActor
 @Observable
 final class MotionTint {
     static let shared = MotionTint()
     private(set) var key: String?
-    private(set) var frame: UIImage?
-    /// bumped with every new frame (the backgrounds cross-fade on it)
-    private(set) var version = 0
+    private(set) var colors: [Color] = []
+    @ObservationIgnored private var rgb: [SIMD3<Float>] = []
 
-    func set(_ key: String, _ image: UIImage) {
+    func set(_ key: String, _ grid: [SIMD3<Float>]) {
+        guard grid.count == 9 else { return }
+        if self.key != key || rgb.count != 9 {
+            rgb = grid
+        } else {
+            // a little of each new frame: slow, steady changes
+            for i in 0..<9 { rgb[i] = rgb[i] * 0.6 + grid[i] * 0.4 }
+        }
         self.key = key
-        frame = image
-        version += 1
+        colors = rgb.map { Color(red: Double($0.x), green: Double($0.y), blue: Double($0.z)) }
     }
 
     func clear(_ key: String) {
         guard self.key == key else { return }
         self.key = nil
-        frame = nil
-        version += 1
+        colors = []
+        rgb = []
     }
 
-    func frame(for key: String) -> UIImage? { self.key == key ? frame : nil }
+    func colors(for key: String) -> [Color]? { self.key == key && colors.count == 9 ? colors : nil }
+}
+
+/// The 3×3 colours of an animated cover, blurred into a soft glow.
+struct TintMesh: View {
+    let colors: [Color]
+    var body: some View {
+        MeshGradient(width: 3, height: 3, points: [
+            [0, 0], [0.5, 0], [1, 0], [0, 0.5], [0.5, 0.5], [1, 0.5], [0, 1], [0.5, 1], [1, 1],
+        ], colors: colors)
+        .animation(.easeInOut(duration: 1.4), value: colors)
+    }
 }
 
 struct LiveCover: View {
@@ -181,7 +198,7 @@ private struct LoopingVideo: UIViewRepresentable {
         /// Every half second: a 48-px frame of the video for `MotionTint`.
         func startSampling() {
             timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            timer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.sample() }
             }
         }
@@ -206,12 +223,21 @@ private struct LoopingVideo: UIViewRepresentable {
             let t = out.itemTime(forHostTime: CACurrentMediaTime())
             guard out.hasNewPixelBuffer(forItemTime: t), let buf = out.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil) else { return }
             DispatchQueue.global(qos: .utility).async {
+                // the frame boiled down to 3×3 average colours
                 let ci = CIImage(cvPixelBuffer: buf)
-                let scale = 48 / max(ci.extent.width, 1)
-                let small = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                guard let cg = Self.context.createCGImage(small, from: small.extent) else { return }
-                let img = UIImage(cgImage: cg)
-                DispatchQueue.main.async { MotionTint.shared.set(key, img) }
+                let small = ci.transformed(by: CGAffineTransform(scaleX: 3 / max(ci.extent.width, 1), y: 3 / max(ci.extent.height, 1)))
+                var px = [UInt8](repeating: 0, count: 9 * 4)
+                Self.context.render(small, toBitmap: &px, rowBytes: 3 * 4, bounds: CGRect(x: small.extent.minX, y: small.extent.minY, width: 3, height: 3),
+                                    format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+                // CoreImage rows go bottom-up: flip to top-down
+                var grid: [SIMD3<Float>] = []
+                for row in (0..<3).reversed() {
+                    for col in 0..<3 {
+                        let i = (row * 3 + col) * 4
+                        grid.append(SIMD3(Float(px[i]) / 255, Float(px[i + 1]) / 255, Float(px[i + 2]) / 255))
+                    }
+                }
+                DispatchQueue.main.async { MotionTint.shared.set(key, grid) }
             }
         }
     }

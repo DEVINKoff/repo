@@ -24,6 +24,7 @@ final class VolumeWatch {
                 let w = VolumeWatch.shared
                 w.level = v
                 if Date() > w.settingUntil { w.changes += 1 }
+                w.followMute(v)
             }
         }
     }
@@ -31,6 +32,19 @@ final class VolumeWatch {
     func stop() {
         observation?.invalidate()
         observation = nil
+    }
+
+    /// Volume at zero pauses the music; turned up again, it plays on (only when it was the zero that paused it).
+    @ObservationIgnored private var pausedByMute = false
+
+    private func followMute(_ v: Float) {
+        let p = Player.shared
+        if v <= 0.001 {
+            if p.isPlaying { p.pause(); pausedByMute = true }
+        } else if pausedByMute {
+            pausedByMute = false
+            if !p.isPlaying, p.track != nil { p.resume() }
+        }
     }
 
     func set(_ v: Float) {
@@ -45,8 +59,10 @@ final class VolumeWatch {
 /// An invisible system volume view: while it is in the window, iOS shows no volume popup of its own.
 struct SystemVolumeHider: UIViewRepresentable {
     func makeUIView(context: Context) -> MPVolumeView {
-        let v = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 1, height: 1))
-        v.alpha = 0.0001
+        // iOS keeps its own popup away only for a volume view that is on screen and not fully transparent
+        let v = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        v.alpha = 0.011
+        v.clipsToBounds = true
         v.isUserInteractionEnabled = false
         DispatchQueue.main.async {
             VolumeWatch.shared.slider = v.subviews.compactMap { $0 as? UISlider }.first

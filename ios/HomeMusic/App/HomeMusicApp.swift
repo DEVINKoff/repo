@@ -14,6 +14,7 @@ struct HomeMusicApp: App {
         _ = SmartShuffle.shared // registers its hooks in the player
         _ = Wave.shared
         StandByFeed.registerCommands() // the StandBy widget's ⏮ ⏯ ⏭
+        VolumeWatch.shared.start() // volume at zero pauses the music; the cinematic mode's dial
     }
 
     var body: some Scene {
@@ -61,9 +62,49 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     @MainActor static func allowLandscape(_ on: Bool) {
         orientations = on ? .allButUpsideDown : .portrait
-        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
-        for w in scene.windows { w.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
-        if !on { scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) { _ in } }
+        refresh()
+        if !on { request(.portrait) }
+    }
+
+    /// Out of the cinematic mode with the phone still sideways: upright now, and kept upright until the phone itself
+    /// is held upright (else iOS would turn it straight back); then sideways is allowed again (while the player is open).
+    @MainActor static func backToPortrait() {
+        orientations = .portrait
+        refresh()
+        request(.portrait)
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        uprightWatch.map(NotificationCenter.default.removeObserver)
+        uprightWatch = NotificationCenter.default.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                guard UIDevice.current.orientation == .portrait else { return }
+                uprightWatch.map(NotificationCenter.default.removeObserver)
+                uprightWatch = nil
+                if AppModel.shared.playerOpen { orientations = .allButUpsideDown; refresh() }
+            }
+        }
+    }
+
+    /// Into the cinematic mode from the button (the phone upright).
+    @MainActor static func toLandscape() {
+        uprightWatch.map(NotificationCenter.default.removeObserver)
+        uprightWatch = nil
+        orientations = .allButUpsideDown
+        refresh()
+        request(.landscapeRight)
+    }
+
+    nonisolated(unsafe) private static var uprightWatch: NSObjectProtocol?
+
+    @MainActor private static func scene() -> UIWindowScene? {
+        UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    }
+
+    @MainActor private static func refresh() {
+        for w in scene()?.windows ?? [] { w.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
+    }
+
+    @MainActor private static func request(_ o: UIInterfaceOrientationMask) {
+        scene()?.requestGeometryUpdate(.iOS(interfaceOrientations: o)) { _ in }
     }
 }
 
@@ -83,7 +124,7 @@ struct RootView: View {
             case .ready: MainTabs().transition(.opacity)
             }
             }
-            // during the opening the app waits a little deeper and soft, and comes up as the iris opens
+            // during the opening the app waits a little deeper and soft, and comes up as the black lifts
             .scaleEffect(revealed ? 1 : 1.08)
             .blur(radius: revealed ? 0 : 10)
             ToastOverlay()
@@ -100,6 +141,8 @@ struct RootView: View {
 }
 
 struct MainTabs: View {
+    /// the mini player and the full player are one thing that grows and shrinks (the zoom transition)
+    @Namespace private var playerZoom
     @Environment(AppModel.self) private var app
     @Environment(Router.self) private var router
     @Environment(Player.self) private var player
@@ -113,6 +156,7 @@ struct MainTabs: View {
         content
             .sheet(isPresented: $app.playerOpen) {
                 PlayerView()
+                    .navigationTransition(.zoom(sourceID: "player", in: playerZoom))
             }
             .sheet(item: $picker.request) { PlaylistPickerSheet(request: $0) }
             .onChange(of: app.playerOpen) { _, open in AppDelegate.allowLandscape(open); Haptics.soft(open ? 0.7 : 0.4) }
@@ -127,13 +171,18 @@ struct MainTabs: View {
             tabs
                 .tabBarMinimizeBehavior(.onScrollDown)
                 .tabViewBottomAccessory {
-                    if player.track != nil { MiniPlayer() } else { NothingPlaying() }
+                    if player.track != nil {
+                        MiniPlayer().matchedTransitionSource(id: "player", in: playerZoom)
+                    } else {
+                        NothingPlaying()
+                    }
                 }
         } else {
             tabs
                 .safeAreaInset(edge: .bottom) {
                     if player.track != nil {
                         MiniPlayer()
+                            .matchedTransitionSource(id: "player", in: playerZoom)
                             .glassRect(18)
                             .padding(.horizontal, 10)
                             .padding(.bottom, 54)
@@ -181,19 +230,20 @@ struct NothingPlaying: View {
     }
 }
 
-/// The opening, about 2 s, on pure black, all of it a function of time:
-/// 1. drops of liquid glass orbit, seen by their own light — a lit rim, a faint inner glow, edges splitting the
-///    light a little (dispersion);
-/// 2. the drops gather into one lens, which breathes once;
-/// 3. the lens opens like an iris: the hole grows from its middle over the whole screen, and the app comes up
-///    through it from a little depth (`reveal`).
+/// The opening, about 2.4 s, on pure black, all of it a function of time:
+/// 1. drops of liquid glass orbit, seen by their own light (a lit rim, a faint inner glow, edges splitting the light);
+/// 2. they gather into one lens, which breathes once;
+/// 3. the lens tears in two like a liquid: one part flows up into the Dynamic Island (on phones that have one), the
+///    other down into the dock; the black lifts and the app is there, its island and dock where the glass landed.
 struct LaunchSplash: View {
     let reveal: () -> Void
     let done: () -> Void
     @State private var start = Date()
     @State private var finished = false
+    @State private var insets = UIEdgeInsets.zero
 
-    private static let total = 2.0
+    private static let total = 2.4
+    private static let revealAt = 1.72
 
     var body: some View {
         GeometryReader { g in
@@ -205,10 +255,11 @@ struct LaunchSplash: View {
         .environment(\.colorScheme, .dark)
         .allowsHitTesting(!finished)
         .task {
+            insets = UIApplication.shared.connectedScenes.compactMap { ($0 as? UIWindowScene)?.keyWindow }.first?.safeAreaInsets ?? .zero
             start = Date()
-            try? await Task.sleep(for: .seconds(1.36))
+            try? await Task.sleep(for: .seconds(Self.revealAt))
             reveal()
-            try? await Task.sleep(for: .seconds(Self.total - 1.36))
+            try? await Task.sleep(for: .seconds(Self.total - Self.revealAt))
             finished = true
             done()
         }
@@ -216,9 +267,10 @@ struct LaunchSplash: View {
 
     private static func clamp(_ x: Double) -> Double { min(1, max(0, x)) }
     private static func ease(_ x: Double) -> Double { let c = clamp(x); return c * c * (3 - 2 * c) }
-    private static func easeInOut(_ x: Double) -> Double {
-        let c = clamp(x)
-        return c < 0.5 ? 4 * c * c * c : 1 - pow(-2 * c + 2, 3) / 2
+    /// eases out past the end a little and settles (a liquid's overshoot)
+    private static func easeOutBack(_ x: Double) -> Double {
+        let c = clamp(x), k = 1.25
+        return 1 + (k + 1) * pow(c - 1, 3) + k * pow(c - 1, 2)
     }
     private static func lerp(_ a: CGFloat, _ b: CGFloat, _ k: Double) -> CGFloat { a + (b - a) * CGFloat(k) }
 
@@ -227,48 +279,54 @@ struct LaunchSplash: View {
     ]
 
     @ViewBuilder private func frame(_ t: Double, _ size: CGSize) -> some View {
-        let gather = Self.ease((t - 0.75) / 0.45)
-        let breathe = 1 + 0.05 * sin(Self.clamp((t - 1.15) / 0.25) * .pi)
-        let iris = Self.easeInOut((t - 1.36) / 0.6)
-        let reach = sqrt(size.width * size.width + size.height * size.height) / 2 + 40
-        let hole = Self.lerp(0, reach * 2, iris)
-
+        let gather = Self.ease((t - 0.7) / 0.45)
+        let breathe = 1 + 0.05 * sin(Self.clamp((t - 1.1) / 0.22) * .pi)
+        let split = (t - 1.3) / 0.62
+        let black = 1 - Self.ease((t - Self.revealAt) / 0.42)
+        let fade = 1 - Self.ease((t - 2.0) / 0.38)
         ZStack {
-            Color.black
-            drops(t, gather: gather)
-                .scaleEffect(breathe * (1 + 0.6 * iris))
-                .opacity(1 - Self.clamp(iris * 1.6))
+            Color.black.opacity(black)
+            if split <= 0 {
+                drops(t, gather: gather).scaleEffect(breathe)
+            } else {
+                halves(Self.easeOutBack(split), size)
+                    .opacity(fade)
+            }
         }
         .frame(width: size.width, height: size.height)
-        // the iris: a soft-edged hole from the lens' middle out to the corners
-        .mask {
-            Rectangle()
-                .overlay {
-                    Circle()
-                        .frame(width: hole, height: hole)
-                        .blur(radius: 18 + 30 * iris)
-                        .blendMode(.destinationOut)
-                }
-                .compositingGroup()
+    }
+
+    /// The lens' two parts on their way to the island and the dock (`k` 0 → 1, a little past and back).
+    private func halves(_ k: Double, _ size: CGSize) -> some View {
+        let lens: CGFloat = 150
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        // the Dynamic Island: 126×37, 11 pt from the top, on phones whose top inset says they have one
+        let island = insets.top >= 51
+        let islandFrame = CGRect(x: c.x - 63, y: 11, width: 126, height: 37)
+        // the floating dock (the tab bar) at the bottom
+        let dockW = size.width - 40, dockH: CGFloat = 62
+        let dockY = size.height - (insets.bottom > 0 ? 52 : 40)
+        let dock = CGRect(x: c.x - dockW / 2, y: dockY - dockH / 2, width: dockW, height: dockH)
+
+        func shape(_ to: CGRect) -> some View {
+            let w = Self.lerp(lens, to.width, k), h = Self.lerp(lens, to.height, k)
+            let x = Self.lerp(c.x, to.midX, k), y = Self.lerp(c.y, to.midY, k)
+            return Color.clear
+                .frame(width: max(1, w), height: max(1, h))
+                .modifier(GlassPill())
+                .overlay { GlassLight(shape: Capsule()) }
+                .position(x: x, y: y)
         }
-        // the lens' rim as it opens: a hair of light, its red and blue a little apart
-        .overlay {
-            if iris > 0 && iris < 1 {
-                ZStack {
-                    Circle().stroke(Color.white.opacity(0.5), lineWidth: 1.5)
-                    Circle().stroke(Color.red.opacity(0.35), lineWidth: 1).offset(x: -1.5)
-                    Circle().stroke(Color.blue.opacity(0.35), lineWidth: 1).offset(x: 1.5)
-                }
-                .frame(width: hole * 0.86, height: hole * 0.86)
-                .blur(radius: 1 + 3 * iris)
-                .opacity(1 - iris)
-                .blendMode(.plusLighter)
-                .allowsHitTesting(false)
+
+        return glassGroup {
+            ZStack {
+                if island { shape(islandFrame) }
+                shape(dock)
             }
         }
     }
 
-    /// The orbiting drops, their edges splitting the light a little; one lens once gathered.
+    /// The orbiting drops, seen by their own light; one lens once gathered.
     private func drops(_ t: Double, gather: Double) -> some View {
         glassGroup {
             ZStack {
@@ -280,20 +338,7 @@ struct LaunchSplash: View {
                     Color.clear
                         .frame(width: d, height: d)
                         .modifier(GlassDrop())
-                        .overlay {
-                            ZStack {
-                                // on black the glass is its light: a rim lit from the top left, a faint inner glow
-                                Circle().strokeBorder(
-                                    LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .white.opacity(0.35)],
-                                                   startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2)
-                                Circle().fill(RadialGradient(colors: [.white.opacity(0.10), .clear], center: UnitPoint(x: 0.35, y: 0.3),
-                                                             startRadius: 0, endRadius: d * 0.6))
-                                Circle().stroke(Color.red.opacity(0.45), lineWidth: 1).offset(x: -1.3, y: -0.4).blur(radius: 0.6)
-                                Circle().stroke(Color.cyan.opacity(0.45), lineWidth: 1).offset(x: 1.3, y: 0.4).blur(radius: 0.6)
-                            }
-                            .blendMode(.plusLighter)
-                            .opacity(1 - 0.35 * gather)
-                        }
+                        .overlay { GlassLight(shape: Circle()).opacity(1 - 0.35 * gather) }
                         .offset(x: r * cos(a), y: r * sin(a))
                 }
             }
@@ -305,6 +350,34 @@ struct LaunchSplash: View {
             GlassEffectContainer(spacing: 38) { c() }
         } else {
             c()
+        }
+    }
+}
+
+/// How glass shows on black: a rim lit from the top left, a faint inner glow, edges splitting the light a little.
+private struct GlassLight<S: InsettableShape>: View {
+    let shape: S
+    var body: some View {
+        ZStack {
+            shape.strokeBorder(LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .white.opacity(0.35)],
+                                              startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2)
+            shape.fill(RadialGradient(colors: [.white.opacity(0.09), .clear], center: UnitPoint(x: 0.35, y: 0.3),
+                                      startRadius: 0, endRadius: 90))
+            shape.stroke(Color.red.opacity(0.45), lineWidth: 1).offset(x: -1.3, y: -0.4).blur(radius: 0.6)
+            shape.stroke(Color.cyan.opacity(0.45), lineWidth: 1).offset(x: 1.3, y: 0.4).blur(radius: 0.6)
+        }
+        .blendMode(.plusLighter)
+        .allowsHitTesting(false)
+    }
+}
+
+/// A pill of liquid glass (frosted material before iOS 26).
+private struct GlassPill: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.tint(.white.opacity(0.04)), in: Capsule())
+        } else {
+            content.background(.ultraThinMaterial, in: Capsule())
         }
     }
 }

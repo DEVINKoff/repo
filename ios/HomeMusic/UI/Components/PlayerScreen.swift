@@ -113,10 +113,8 @@ struct PlayerView: View {
 
     /// Turns the phone's UI sideways (the cinematic mode) or back.
     private func rotate(landscape: Bool) {
-        AppDelegate.allowLandscape(true)
-        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
-        scene.requestGeometryUpdate(.iOS(interfaceOrientations: landscape ? .landscapeRight : .portrait)) { _ in }
-        scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        Haptics.soft()
+        if landscape { AppDelegate.toLandscape() } else { AppDelegate.backToPortrait() }
     }
 
     private var header: some View {
@@ -434,18 +432,15 @@ struct PlayerBackground: View {
             ZStack(alignment: .top) {
                 Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.035, green: 0.035, blue: 0.05, alpha: 1)
                                                                : UIColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1) })
-                Group {
-                    // the animated cover's own colours while it plays
-                    if let frame = tintKey.flatMap({ tint.frame(for: $0) }) {
-                        Image(uiImage: frame).resizable().scaledToFill()
-                            .id(ObjectIdentifier(frame))
-                            .transition(.opacity)
-                    } else {
-                        Cover(url: url, size: g.size.width, corner: 0, pixels: 160)
+                ZStack {
+                    Cover(url: url, size: g.size.width, corner: 0, pixels: 160)
+                    // the animated cover's own colours while it plays, flowing over the still ones
+                    if let colors = tintKey.flatMap({ tint.colors(for: $0) }) {
+                        TintMesh(colors: colors).transition(.opacity)
                     }
                 }
                     .frame(width: g.size.width, height: g.size.width)
-                    .animation(.easeInOut(duration: 0.9), value: tint.version)
+                    .animation(.easeInOut(duration: 1.2), value: tintKey.flatMap { tint.colors(for: $0) } != nil)
                     .blur(radius: 80, opaque: true)
                     .saturation(1.6)
                     .opacity(0.55)

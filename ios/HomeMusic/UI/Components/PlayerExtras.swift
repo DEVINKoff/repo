@@ -229,6 +229,8 @@ struct CinematicPlayer: View {
     @Environment(Stars.self) private var stars
     @State private var controls = true
     @State private var hide: Task<Void, Never>?
+    /// the last press of a control: the screen's own tap (show / hide) leaves such a tap alone
+    @State private var lastControl = Date.distantPast
 
     var body: some View {
         GeometryReader { g in
@@ -257,7 +259,7 @@ struct CinematicPlayer: View {
                             .id(track.uid)
                             .transition(.blurFade)
                             Spacer(minLength: 0)
-                            Button(action: rotateBack) {
+                            Button { used(); rotateBack() } label: {
                                 Image(systemName: "arrow.down.right.and.arrow.up.left")
                                     .font(.system(size: 15, weight: .semibold))
                                     .frame(width: 38, height: 38)
@@ -278,12 +280,14 @@ struct CinematicPlayer: View {
                 .frame(maxHeight: .infinity, alignment: .top)
                 CinematicBar(liked: stars.isLiked(.track(track)), like: {
                     Task { await stars.toggle(.track(track), context: player.context) }
-                }, poke: poke)
+                }, poke: used)
                 .frame(height: barH)
                 .opacity(controls ? 1 : 0)
                 .offset(y: controls ? 0 : 30)
                 .blur(radius: controls ? 0 : 6)
                 .allowsHitTesting(controls)
+                // a press anywhere on the bar counts as using it
+                .simultaneousGesture(TapGesture().onEnded { lastControl = Date() })
             }
             .frame(width: w, height: h)
             .animation(.spring(response: 0.7, dampingFraction: 0.88), value: controls)
@@ -309,19 +313,24 @@ struct CinematicPlayer: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            VolumeDial().padding(.top, 14).padding(.trailing, 22)
+            // the very corner of the screen (the camera sits on a side in landscape, not up here)
+            VolumeDial()
+                .padding(.top, 8)
+                .padding(.trailing, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .ignoresSafeArea()
         }
-        .background { SystemVolumeHider().frame(width: 1, height: 1) }
+        .overlay(alignment: .topLeading) {
+            SystemVolumeHider().frame(width: 1, height: 1).allowsHitTesting(false)
+        }
         .animation(.smooth(duration: 0.45), value: controls)
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
-            VolumeWatch.shared.start()
             lyrics.load(for: player.track)
             poke()
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
-            VolumeWatch.shared.stop()
             hide?.cancel()
         }
         .persistentSystemOverlays(.hidden)
@@ -329,6 +338,8 @@ struct CinematicPlayer: View {
     }
 
     private func toggleControls() {
+        // a button was just pressed: that tap was the button's, the controls stay
+        if Date().timeIntervalSince(lastControl) < 0.35 { return poke() }
         if controls {
             hide?.cancel()
             Haptics.soft(0.4)
@@ -337,6 +348,12 @@ struct CinematicPlayer: View {
             Haptics.soft(0.6)
             poke()
         }
+    }
+
+    /// A control was used: the bar stays a while longer.
+    private func used() {
+        lastControl = Date()
+        poke()
     }
 
     /// Shows the bar and hides it again after a few seconds.
@@ -456,21 +473,27 @@ private struct CinematicBackdrop: View {
         GeometryReader { g in
             ZStack {
                 Color(red: 0.04, green: 0.04, blue: 0.05)
-                // the animated cover's own colours while it plays, else the still cover's
-                if let frame = tintKey.flatMap({ tint.frame(for: $0) }) ?? image {
-                    Image(uiImage: frame).resizable().scaledToFill()
+                if let image {
+                    Image(uiImage: image).resizable().scaledToFill()
                         .frame(width: g.size.width, height: g.size.height)
                         .blur(radius: 60, opaque: true)
                         .saturation(1.5)
                         .opacity(0.75)
-                        .id(ObjectIdentifier(frame))
+                        .transition(.opacity)
+                }
+                // the animated cover's own colours while it plays, flowing over the still ones
+                if let colors = tintKey.flatMap({ tint.colors(for: $0) }) {
+                    TintMesh(colors: colors)
+                        .blur(radius: 50)
+                        .saturation(1.4)
+                        .opacity(0.8)
                         .transition(.opacity)
                 }
                 LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
             .frame(width: g.size.width, height: g.size.height)
             .clipped()
-            .animation(.easeInOut(duration: 0.9), value: tint.version)
+            .animation(.easeInOut(duration: 1.2), value: tintKey.flatMap { tint.colors(for: $0) } != nil)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)
