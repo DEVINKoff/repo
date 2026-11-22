@@ -47,12 +47,12 @@ struct TrackRow: View {
         }
         .contextMenu { TrackMenuItems(track: track, context: context) }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button { player.playNext([QueueTrack(track, withSong: withSong)], context: context) } label: {
+            Button { Haptics.success(); player.playNext([QueueTrack(track, withSong: withSong)], context: context) } label: {
                 Label("Играть следующим", systemImage: "text.insert")
             }.tint(.purple)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button { player.addToQueue([QueueTrack(track, withSong: withSong)], context: context) } label: {
+            Button { Haptics.success(); player.addToQueue([QueueTrack(track, withSong: withSong)], context: context) } label: {
                 Label("В очередь", systemImage: "text.badge.plus")
             }.tint(.orange)
         }
@@ -90,6 +90,7 @@ struct TrackRow: View {
     }
 
     private func play() {
+        Haptics.tap()
         OnScreen.shared.touch(track.ref)
         let q = list.map { QueueTrack($0, withSong: withSong) }
         let t = q.first { $0.ref == track.ref } ?? QueueTrack(track, withSong: withSong)

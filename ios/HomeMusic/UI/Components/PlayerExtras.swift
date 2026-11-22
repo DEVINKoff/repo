@@ -293,22 +293,50 @@ struct CinematicPlayer: View {
         .padding(.horizontal, 22)
         .padding(.top, 26)
         .padding(.bottom, 10)
-        .background { CinematicBackdrop(url: track.coverUrl ?? track.coverSmallUrl) }
+        .background { CinematicBackdrop(url: track.coverUrl ?? track.coverSmallUrl, tintKey: MotionCovers.key(track)) }
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
-        .simultaneousGesture(TapGesture().onEnded { poke() })
+        // a tap on an empty spot shows or hides the controls (a tap on a lyric line or a button is theirs)
+        .contentShape(Rectangle())
+        .onTapGesture { toggleControls() }
+        // controls hidden: the whole screen is one catch-all — nothing under it (the lyrics) reacts
+        .overlay {
+            if !controls {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { toggleControls() }
+                    .ignoresSafeArea()
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            VolumeDial().padding(.top, 14).padding(.trailing, 22)
+        }
+        .background { SystemVolumeHider().frame(width: 1, height: 1) }
         .animation(.smooth(duration: 0.45), value: controls)
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
+            VolumeWatch.shared.start()
             lyrics.load(for: player.track)
             poke()
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
+            VolumeWatch.shared.stop()
             hide?.cancel()
         }
         .persistentSystemOverlays(.hidden)
         .statusBarHidden()
+    }
+
+    private func toggleControls() {
+        if controls {
+            hide?.cancel()
+            Haptics.soft(0.4)
+            withAnimation(.smooth) { controls = false }
+        } else {
+            Haptics.soft(0.6)
+            poke()
+        }
     }
 
     /// Shows the bar and hides it again after a few seconds.
@@ -334,7 +362,7 @@ private struct CinematicBar: View {
         VStack(spacing: 6) {
             Hairline(poke: poke)
             HStack {
-                Button { like(); poke() } label: {
+                Button { Haptics.tap(); like(); poke() } label: {
                     Image(systemName: liked ? "heart.fill" : "heart")
                         .foregroundStyle(liked ? Theme.accent : .white)
                         .symbolEffect(.bounce, value: liked)
@@ -343,10 +371,10 @@ private struct CinematicBar: View {
                 }
                 Spacer()
                 HStack(spacing: 30) {
-                    Button { player.prev(); poke() } label: {
+                    Button { Haptics.tap(); player.prev(); poke() } label: {
                         Image(systemName: "backward.fill").font(.system(size: 24)).frame(width: 48, height: 48)
                     }
-                    Button { player.toggle(); poke() } label: {
+                    Button { Haptics.press(); player.toggle(); poke() } label: {
                         ZStack {
                             Circle().fill(Theme.accent)
                             Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
@@ -358,12 +386,12 @@ private struct CinematicBar: View {
                         .frame(width: 58, height: 58)
                         .shadow(color: Theme.accent.opacity(0.45), radius: 14, y: 6)
                     }
-                    Button { player.next(); poke() } label: {
+                    Button { Haptics.tap(); player.next(); poke() } label: {
                         Image(systemName: "forward.fill").font(.system(size: 24)).frame(width: 48, height: 48)
                     }
                 }
                 Spacer()
-                Button { player.cycleRepeat(); poke() } label: {
+                Button { Haptics.select(); player.cycleRepeat(); poke() } label: {
                     Image(systemName: player.repeatMode == .one ? "repeat.1" : "repeat")
                         .foregroundStyle(player.repeatMode != .off ? Theme.accent : .white.opacity(0.6))
                         .contentTransition(.symbolEffect(.replace))
@@ -420,24 +448,29 @@ private struct Hairline: View {
 /// The cover blown up and blurred behind everything, darkened, filling the whole screen edge to edge.
 private struct CinematicBackdrop: View {
     let url: String?
+    var tintKey: String? = nil
     @State private var image: UIImage?
+    @Environment(MotionTint.self) private var tint
 
     var body: some View {
         GeometryReader { g in
             ZStack {
                 Color(red: 0.04, green: 0.04, blue: 0.05)
-                if let image {
-                    Image(uiImage: image).resizable().scaledToFill()
+                // the animated cover's own colours while it plays, else the still cover's
+                if let frame = tintKey.flatMap({ tint.frame(for: $0) }) ?? image {
+                    Image(uiImage: frame).resizable().scaledToFill()
                         .frame(width: g.size.width, height: g.size.height)
                         .blur(radius: 60, opaque: true)
                         .saturation(1.5)
                         .opacity(0.75)
+                        .id(ObjectIdentifier(frame))
                         .transition(.opacity)
                 }
                 LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
             }
             .frame(width: g.size.width, height: g.size.height)
             .clipped()
+            .animation(.easeInOut(duration: 0.9), value: tint.version)
         }
         .ignoresSafeArea()
         .allowsHitTesting(false)

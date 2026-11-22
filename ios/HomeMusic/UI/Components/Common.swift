@@ -67,7 +67,7 @@ struct PlayShuffleButtons: View {
     var shuffle: () -> Void
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: play) {
+            Button { Haptics.press(); play() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "play.fill")
                     Text("Слушать")
@@ -78,7 +78,7 @@ struct PlayShuffleButtons: View {
             }
             .prominentButton()
             .tint(Theme.accent)
-            Button(action: shuffle) {
+            Button { Haptics.press(); shuffle() } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "shuffle")
                     Text("Перемешать")

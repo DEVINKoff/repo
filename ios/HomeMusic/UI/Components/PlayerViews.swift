@@ -19,7 +19,7 @@ struct MiniPlayer: View {
                 .id("title-\(t.uid)")
                 .transition(.push(from: .bottom).combined(with: .opacity))
                 Spacer(minLength: 0)
-                Button { player.toggle() } label: {
+                Button { Haptics.press(); player.toggle() } label: {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
                         .foregroundStyle(Theme.accent)
@@ -27,7 +27,7 @@ struct MiniPlayer: View {
                         .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.pressable)
-                Button { player.next() } label: {
+                Button { Haptics.tap(); player.next() } label: {
                     Image(systemName: "forward.fill").font(.title3).frame(width: 36, height: 36)
                         .symbolEffect(.bounce.byLayer, value: t.uid)
                 }

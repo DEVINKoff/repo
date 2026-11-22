@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import SwiftUI
 import UIKit
 
@@ -74,6 +75,32 @@ enum MotionCovers {
     }
 }
 
+/// The animated cover's current colours: a tiny frame of the playing video, for the backgrounds behind it.
+@MainActor
+@Observable
+final class MotionTint {
+    static let shared = MotionTint()
+    private(set) var key: String?
+    private(set) var frame: UIImage?
+    /// bumped with every new frame (the backgrounds cross-fade on it)
+    private(set) var version = 0
+
+    func set(_ key: String, _ image: UIImage) {
+        self.key = key
+        frame = image
+        version += 1
+    }
+
+    func clear(_ key: String) {
+        guard self.key == key else { return }
+        self.key = nil
+        frame = nil
+        version += 1
+    }
+
+    func frame(for key: String) -> UIImage? { self.key == key ? frame : nil }
+}
+
 struct LiveCover: View {
     let track: QueueTrack
     let size: CGFloat
@@ -90,7 +117,7 @@ struct LiveCover: View {
             Cover(url: HiRes.cover(track.coverUrl ?? track.coverSmallUrl, size: 900), size: size, corner: 0,
                   fallback: track.coverUrl ?? track.coverSmallUrl)
             if let url, live {
-                LoopingVideo(url: url, playing: playing, ready: $ready)
+                LoopingVideo(url: url, playing: playing, ready: $ready, tintKey: MotionCovers.key(track))
                     .opacity(ready ? 1 : 0)
                     .animation(.easeInOut(duration: 0.6), value: ready)
             }
@@ -137,6 +164,7 @@ private struct LoopingVideo: UIViewRepresentable {
     let url: URL
     let playing: Bool
     @Binding var ready: Bool
+    var tintKey: String? = nil
 
     final class PlayerView: UIView {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
@@ -144,13 +172,57 @@ private struct LoopingVideo: UIViewRepresentable {
         var looper: AVPlayerLooper?
         var observation: NSKeyValueObservation?
         var url: URL?
+        var tintKey: String?
+        /// a video output per looped item (an output belongs to one item)
+        private var outputs: [ObjectIdentifier: AVPlayerItemVideoOutput] = [:]
+        private var timer: Timer?
+        private static let context = CIContext(options: [.useSoftwareRenderer: false])
+
+        /// Every half second: a 48-px frame of the video for `MotionTint`.
+        func startSampling() {
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.sample() }
+            }
+        }
+
+        func stopSampling() {
+            timer?.invalidate()
+            timer = nil
+            outputs = [:]
+            if let k = tintKey { MotionTint.shared.clear(k) }
+        }
+
+        private func sample() {
+            guard let key = tintKey, let item = playerLayer.player?.currentItem, playerLayer.isReadyForDisplay else { return }
+            let id = ObjectIdentifier(item)
+            let out: AVPlayerItemVideoOutput
+            if let o = outputs[id] { out = o } else {
+                out = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+                item.add(out)
+                outputs[id] = out
+                return
+            }
+            let t = out.itemTime(forHostTime: CACurrentMediaTime())
+            guard out.hasNewPixelBuffer(forItemTime: t), let buf = out.copyPixelBuffer(forItemTime: t, itemTimeForDisplay: nil) else { return }
+            DispatchQueue.global(qos: .utility).async {
+                let ci = CIImage(cvPixelBuffer: buf)
+                let scale = 48 / max(ci.extent.width, 1)
+                let small = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+                guard let cg = Self.context.createCGImage(small, from: small.extent) else { return }
+                let img = UIImage(cgImage: cg)
+                DispatchQueue.main.async { MotionTint.shared.set(key, img) }
+            }
+        }
     }
 
     func makeUIView(context: Context) -> PlayerView {
         let v = PlayerView()
         v.playerLayer.videoGravity = .resizeAspectFill
         v.backgroundColor = .clear
+        v.tintKey = tintKey
         load(v)
+        if tintKey != nil { v.startSampling() }
         return v
     }
 
@@ -161,6 +233,7 @@ private struct LoopingVideo: UIViewRepresentable {
     }
 
     static func dismantleUIView(_ v: PlayerView, coordinator: ()) {
+        v.stopSampling()
         v.playerLayer.player?.pause()
         v.observation?.invalidate()
         v.looper = nil

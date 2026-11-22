@@ -304,17 +304,6 @@ struct FileRow: View {
         Task { if await Actions.startDownload(DownloadIn(trackRefs: [ref])) != nil { player.markQueued(ref) } }
     }
 
-    private func providerName(_ p: String) -> String {
-        switch p {
-        case "hitmoz": "hitmoz"
-        case "hitmos_fm": "hitmos.fm"
-        case "ytdlp": "YouTube Music"
-        case "yt_reupload": "YouTube"
-        case "soundcloud": "SoundCloud"
-        case "soulseek": "Soulseek"
-        default: p
-        }
-    }
 }
 
 struct Tag: View {
@@ -325,5 +314,18 @@ struct Tag: View {
             .padding(.horizontal, 6).padding(.vertical, 2)
             .foregroundStyle(tint)
             .background(tint.opacity(0.14), in: Capsule())
+    }
+}
+
+/// A source's name as the app shows it.
+func providerName(_ p: String) -> String {
+    switch p {
+    case "hitmoz": "hitmoz"
+    case "hitmos_fm": "hitmos.fm"
+    case "ytdlp": "YouTube Music"
+    case "yt_reupload": "YouTube"
+    case "soundcloud": "SoundCloud"
+    case "soulseek": "Soulseek"
+    default: p
     }
 }

@@ -198,6 +198,7 @@ struct LikedView: View {
     private func header(_ songs: [Track], total: Int) -> some View {
         HStack(spacing: 10) {
             Button {
+                Haptics.press()
                 player.listenAll(songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page)
             } label: {
                 HStack(spacing: 6) {
@@ -213,6 +214,7 @@ struct LikedView: View {
             .buttonStyle(.pressable)
             .disabled(songs.isEmpty)
             Button {
+                Haptics.press()
                 player.listenAll(songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page)
             } label: {
                 Image(systemName: "shuffle").font(.subheadline.weight(.semibold)).frame(width: 38, height: 38)

@@ -673,6 +673,12 @@ final class Player {
         }
     }
 
+    /// The current track again from the start, with the file the user just picked for it.
+    func replayWithNewFile() {
+        guard track != nil else { return }
+        start(queue, at: index)
+    }
+
     func toggle() {
         if isPlaying { pause() } else { resume() }
     }

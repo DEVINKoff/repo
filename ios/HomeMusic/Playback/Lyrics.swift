@@ -263,16 +263,17 @@ struct LyricsView: View {
             ScrollView {
                 // a plain VStack: every line keeps one measured height, so nothing shifts while the lyrics scroll
                 VStack(alignment: .leading, spacing: 22) {
-                    Color.clear.frame(height: 40)
+                    Color.clear.frame(height: 44)
                     ForEach(lines) { line in
                         LyricLine(line: line, isNow: line.id == current, passed: (current ?? -1) > line.id,
                                   far: abs(line.id - (current ?? line.id)) > 2)
                             .equatable()
-                            .onTapGesture { player.seek(max(0, line.time - 0.05)) }
+                            .onTapGesture { Haptics.select(); player.seek(max(0, line.time - 0.05)) }
                             .id(line.id)
                     }
                     Color.clear.frame(height: 220)
                 }
+                .padding(.horizontal, 10)
             }
             .scrollIndicators(.hidden)
             .background { LyricsClock(lines: lines, current: $current) }
@@ -334,8 +335,9 @@ struct LyricLine: View, Equatable {
             }
         }
         .blur(radius: isNow ? 0 : far ? 1.4 : 0.5)
-        .scaleEffect(isNow ? 1 : 0.95, anchor: .leading)
+        .scaleEffect(isNow ? 1 : 0.96, anchor: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .contentShape(Rectangle())
         .animation(.smooth(duration: 0.6), value: isNow)
     }
@@ -399,7 +401,7 @@ struct SungWord: View {
             }
             .shadow(color: Color.primary.opacity(0.35 * env), radius: 9 * env)
             .offset(y: -2.5 * env)
-            .scaleEffect(1 + 0.035 * env, anchor: .bottom)
+            .scaleEffect(1 + 0.03 * env, anchor: .bottomLeading)
     }
 }
 
@@ -408,23 +410,30 @@ struct FlowLayout: Layout {
     var spacing: CGFloat = 8
     var lineSpacing: CGFloat = 4
 
+    /// A word never wider than the line (a very long one wraps inside itself instead of running off the edge).
+    private func size(_ v: LayoutSubview, _ width: CGFloat) -> CGSize {
+        let s = v.sizeThatFits(.unspecified)
+        guard width.isFinite, s.width > width else { return s }
+        return v.sizeThatFits(ProposedViewSize(width: width, height: nil))
+    }
+
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, maxX: CGFloat = 0
         for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
+            let s = size(v, width)
             if x > 0 && x + s.width > width { y += rowH + lineSpacing; x = 0; rowH = 0 }
             x += s.width + spacing
             maxX = max(maxX, x - spacing)
             rowH = max(rowH, s.height)
         }
-        return CGSize(width: proposal.width ?? maxX, height: y + rowH)
+        return CGSize(width: proposal.width.map { $0.isFinite ? $0 : maxX } ?? maxX, height: y + rowH)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
         for v in subviews {
-            let s = v.sizeThatFits(.unspecified)
+            let s = size(v, bounds.width)
             if x > bounds.minX && x + s.width > bounds.maxX { y += rowH + lineSpacing; x = bounds.minX; rowH = 0 }
             v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
             x += s.width + spacing

@@ -13,6 +13,7 @@ struct PlayerView: View {
     @State private var mode: Mode = .cover
     @State private var isLandscape = false
     @Namespace private var hero
+    @State private var picking: QueueTrack?
     /// the artists of a track with several, to pick which one to open
     @State private var artistChoice: [QueueTrack.Artist] = []
 
@@ -20,7 +21,8 @@ struct PlayerView: View {
         GeometryReader { geo in
             let art = max(140, min(geo.size.width - 48, geo.size.height * 0.44))
             ZStack {
-                PlayerBackground(url: player.track?.coverUrl ?? player.track?.coverSmallUrl)
+                PlayerBackground(url: player.track?.coverUrl ?? player.track?.coverSmallUrl,
+                                 tintKey: player.track.map { MotionCovers.key($0) })
                 if let t = player.track {
                     if geo.size.width > geo.size.height * 1.15 {
                         // the phone turned sideways: the cinematic mode
@@ -61,6 +63,7 @@ struct PlayerView: View {
         }
         .presentationBackground(Color(.systemBackground))
         .presentationDragIndicator(.visible)
+        .sheet(item: $picking) { PickFileSheet(track: $0) }
         .interactiveDismissDisabled(isLandscape)
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height * 1.15 } action: { isLandscape = $0 }
     }
@@ -137,6 +140,13 @@ struct PlayerView: View {
                     .accessibilityLabel("Кинорежим")
                     Menu {
                         TrackMenuItems(track: Track(t), context: player.context, inPlayer: true)
+                        if !t.ref.hasPrefix("nd:") && !t.ref.hasPrefix("file:") && player.info?.kind != "library" {
+                            Section {
+                                Button { picking = t } label: {
+                                    Label("Выбрать другой файл", systemImage: "arrow.triangle.2.circlepath")
+                                }
+                            }
+                        }
                         Section {
                             Toggle(isOn: Binding(get: { AppTheme.shared.motionCovers }, set: { AppTheme.shared.motionCovers = $0 })) {
                                 Label("Живые обложки", systemImage: "livephoto")
@@ -248,6 +258,7 @@ struct PlayerView: View {
     }
 
     private func openArtist(_ t: QueueTrack) {
+        Haptics.tap()
         let all = t.allArtists
         if all.count > 1 { artistChoice = all } else if let a = all.first { open(a) }
     }
@@ -294,7 +305,7 @@ struct PlayerView: View {
     private var transport: some View {
         let canNext = player.hasNext || player.repeatMode == .all
         return HStack {
-            Button { player.prev() } label: {
+            Button { Haptics.tap(); player.prev() } label: {
                 Image(systemName: "backward.fill").font(.system(size: 26)).frame(width: 64, height: 64)
             }
             .buttonStyle(.pressable)
@@ -318,7 +329,7 @@ struct PlayerView: View {
             .buttonStyle(.pressable)
             .sensoryFeedback(.impact(weight: .medium), trigger: player.isPlaying)
             Spacer()
-            Button { player.next() } label: {
+            Button { Haptics.tap(); player.next() } label: {
                 Image(systemName: "forward.fill").font(.system(size: 26)).frame(width: 64, height: 64)
             }
             .buttonStyle(.pressable)
@@ -348,7 +359,7 @@ struct PlayerView: View {
     }
 
     private func modeButton(_ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button { Haptics.select(); action() } label: {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(on ? Theme.accent : Color.primary.opacity(0.55))
@@ -415,13 +426,26 @@ struct Scrubber: View {
 /// A plain surface (dark or light, as the app's theme), with the cover's colours glowing from the top.
 struct PlayerBackground: View {
     var url: String?
+    var tintKey: String? = nil
+    @Environment(MotionTint.self) private var tint
+
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .top) {
                 Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.035, green: 0.035, blue: 0.05, alpha: 1)
                                                                : UIColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1) })
-                Cover(url: url, size: g.size.width, corner: 0, pixels: 160)
+                Group {
+                    // the animated cover's own colours while it plays
+                    if let frame = tintKey.flatMap({ tint.frame(for: $0) }) {
+                        Image(uiImage: frame).resizable().scaledToFill()
+                            .id(ObjectIdentifier(frame))
+                            .transition(.opacity)
+                    } else {
+                        Cover(url: url, size: g.size.width, corner: 0, pixels: 160)
+                    }
+                }
                     .frame(width: g.size.width, height: g.size.width)
+                    .animation(.easeInOut(duration: 0.9), value: tint.version)
                     .blur(radius: 80, opaque: true)
                     .saturation(1.6)
                     .opacity(0.55)

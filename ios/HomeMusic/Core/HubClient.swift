@@ -292,6 +292,10 @@ extension HubClient {
 
     // listening before download
     func listen(_ ref: String) async throws -> ListenOut { try await request("GET", "/api/listen", query: ["ref": ref]) }
+    /// The user's own file for `ref` (a wrong automatic pick): played and downloaded from now on.
+    func pickFile(ref: String, fileRef: String) async throws -> ListenOut {
+        try await request("POST", "/api/listen/pick", json: ["ref": ref, "file_ref": fileRef])
+    }
     struct Queued: Decodable { var queued: Int? }
     @discardableResult
     func listenPrefetch(_ refs: [String]) async throws -> Queued { try await request("POST", "/api/listen/prefetch", json: ["refs": refs]) }

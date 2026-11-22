@@ -32,6 +32,8 @@ struct HomeMusicApp: App {
                 .environment(PlaylistPicker.shared)
                 .environment(Lyrics.shared)
                 .environment(AppTheme.shared)
+                .environment(VolumeWatch.shared)
+                .environment(MotionTint.shared)
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -113,7 +115,8 @@ struct MainTabs: View {
                 PlayerView()
             }
             .sheet(item: $picker.request) { PlaylistPickerSheet(request: $0) }
-            .onChange(of: app.playerOpen) { _, open in AppDelegate.allowLandscape(open) }
+            .onChange(of: app.playerOpen) { _, open in AppDelegate.allowLandscape(open); Haptics.soft(open ? 0.7 : 0.4) }
+            .onChange(of: router.tab) { Haptics.select() }
             .onChange(of: app.route) { _, r in
                 if r == .downloads { router.openDownloads(); app.route = nil }
             }
@@ -178,8 +181,8 @@ struct NothingPlaying: View {
     }
 }
 
-/// The opening, about 2 s, always dark, all of it a function of time:
-/// 1. a dark mesh gradient in the accent's colours; drops of liquid glass orbit over it, their edges splitting the
+/// The opening, about 2 s, on pure black, all of it a function of time:
+/// 1. drops of liquid glass orbit, seen by their own light — a lit rim, a faint inner glow, edges splitting the
 ///    light a little (dispersion);
 /// 2. the drops gather into one lens, which breathes once;
 /// 3. the lens opens like an iris: the hole grows from its middle over the whole screen, and the app comes up
@@ -231,8 +234,7 @@ struct LaunchSplash: View {
         let hole = Self.lerp(0, reach * 2, iris)
 
         ZStack {
-            LaunchMesh(t: t)
-                .scaleEffect(1 + 0.08 * iris)
+            Color.black
             drops(t, gather: gather)
                 .scaleEffect(breathe * (1 + 0.6 * iris))
                 .opacity(1 - Self.clamp(iris * 1.6))
@@ -280,12 +282,17 @@ struct LaunchSplash: View {
                         .modifier(GlassDrop())
                         .overlay {
                             ZStack {
-                                Circle().stroke(Color.red.opacity(0.4), lineWidth: 1).offset(x: -1.2, y: -0.4)
-                                Circle().stroke(Color.cyan.opacity(0.4), lineWidth: 1).offset(x: 1.2, y: 0.4)
+                                // on black the glass is its light: a rim lit from the top left, a faint inner glow
+                                Circle().strokeBorder(
+                                    LinearGradient(colors: [.white.opacity(0.75), .white.opacity(0.08), .white.opacity(0.35)],
+                                                   startPoint: .topLeading, endPoint: .bottomTrailing), lineWidth: 1.2)
+                                Circle().fill(RadialGradient(colors: [.white.opacity(0.10), .clear], center: UnitPoint(x: 0.35, y: 0.3),
+                                                             startRadius: 0, endRadius: d * 0.6))
+                                Circle().stroke(Color.red.opacity(0.45), lineWidth: 1).offset(x: -1.3, y: -0.4).blur(radius: 0.6)
+                                Circle().stroke(Color.cyan.opacity(0.45), lineWidth: 1).offset(x: 1.3, y: 0.4).blur(radius: 0.6)
                             }
-                            .blur(radius: 0.6)
                             .blendMode(.plusLighter)
-                            .opacity(0.8 - 0.4 * gather)
+                            .opacity(1 - 0.35 * gather)
                         }
                         .offset(x: r * cos(a), y: r * sin(a))
                 }
@@ -313,26 +320,3 @@ private struct GlassDrop: ViewModifier {
     }
 }
 
-/// A 3×3 mesh of the accent and its neighbours, its inner points drifting.
-private struct LaunchMesh: View {
-    let t: Double
-
-    var body: some View {
-        let a = Theme.accent.mix(with: .black, by: 0.35)
-        let base = Color(red: 0.02, green: 0.02, blue: 0.035)
-        let c1 = a.mix(with: .pink, by: 0.35).mix(with: .black, by: 0.45)
-        let c2 = a.mix(with: .cyan, by: 0.35).mix(with: .black, by: 0.5)
-        let c3 = a.mix(with: base, by: 0.75)
-        let x = Float(0.5 + 0.18 * sin(t * 1.9))
-        let y = Float(0.5 + 0.16 * cos(t * 1.5))
-        MeshGradient(width: 3, height: 3, points: [
-            [0, 0], [Float(0.5 + 0.2 * sin(t * 1.3)), 0], [1, 0],
-            [0, Float(0.5 + 0.2 * cos(t * 1.7))], [x, y], [1, Float(0.5 + 0.2 * sin(t * 1.1))],
-            [0, 1], [Float(0.5 + 0.2 * cos(t * 1.4)), 1], [1, 1],
-        ], colors: [
-            c3, c1, base,
-            c2, a, c1,
-            base, c2, c3,
-        ])
-    }
-}
