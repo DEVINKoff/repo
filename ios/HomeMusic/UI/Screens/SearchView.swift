@@ -13,6 +13,7 @@ struct SearchView: View {
     @State private var tracks: [Track] = []
     @State private var next: Int?
     @State private var loadingMore = false
+    @State private var moreFailed = false
     @State private var error: String?
     @State private var searching = false
     @State private var sources: [Candidate]?
@@ -96,8 +97,8 @@ struct SearchView: View {
             if !r.artists.isEmpty {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 14) {
-                            ForEach(r.artists) { a in
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(Array(r.artists.enumerated()), id: \.offset) { _, a in
                                 NavigationLink(value: Dest.catalogArtist(a.ref)) {
                                     ArtistBubble(name: a.name, picture: a.pictureSmallUrl ?? a.pictureUrl, size: 96)
                                 }
@@ -105,15 +106,17 @@ struct SearchView: View {
                             }
                         }
                         .padding(.horizontal)
+                        .padding(.vertical, 4)
                     }
                     .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
                 } header: { Text("Исполнители") }
             }
             if !r.albums.isEmpty {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(alignment: .top, spacing: 14) {
-                            ForEach(r.albums) { a in
+                        HStack(alignment: .top, spacing: 14) {
+                            ForEach(Array(r.albums.enumerated()), id: \.offset) { _, a in
                                 NavigationLink(value: Dest.catalogAlbum(a.ref)) {
                                     AlbumCard(title: a.title, subtitle: [a.artist, a.displayYear.map(String.init)].compactMap { $0 }.joined(separator: " · "),
                                               cover: a.coverSmallUrl ?? a.coverUrl, width: 140, badge: ownedBadge(a.ownedStatus))
@@ -122,17 +125,25 @@ struct SearchView: View {
                             }
                         }
                         .padding(.horizontal)
+                        .padding(.vertical, 4)
                     }
                     .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
                 } header: { Text("Альбомы") }
             }
             if !tracks.isEmpty {
                 Section("Треки") {
-                    ForEach(Array(tracks.enumerated()), id: \.element.ref) { i, t in
+                    ForEach(Array(tracks.enumerated()), id: \.offset) { i, t in
                         TrackRow(track: t, list: tracks, context: "search", origin: "search", order: 1000 + i)
-                            .onAppear { if i == tracks.count - 1 { Task { await more() } } }
+                            // the next page is asked for a few rows before the end (search.tsx MORE_AT)
+                            .onAppear { if i >= tracks.count - 6 { Task { await more() } } }
                     }
-                    if loadingMore { ProgressView().frame(maxWidth: .infinity) }
+                    if loadingMore {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else if next != nil {
+                        Button(moreFailed ? "Не загрузилось — повторить" : "Показать ещё") { Task { await more() } }
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
             if r.library.isEmpty && r.artists.isEmpty && r.albums.isEmpty && tracks.isEmpty {
@@ -167,8 +178,10 @@ struct SearchView: View {
             let r = try await HubClient.shared.search(query)
             guard !Task.isCancelled else { return }
             result = r
-            tracks = r.tracks
+            var seen = Set<String>()
+            tracks = r.tracks.filter { seen.insert($0.ref).inserted }
             next = r.tracksNext
+            moreFailed = false
             error = nil
             // the account's recent queries (debounced, independent of the result)
             try? await Task.sleep(for: .seconds(1.2))
@@ -180,9 +193,12 @@ struct SearchView: View {
 
     private func more() async {
         guard let offset = next, !loadingMore else { return }
+        let query = q
         loadingMore = true
         defer { loadingMore = false }
-        guard let r = try? await HubClient.shared.searchTracks(q, offset: offset) else { return }
+        guard let r = try? await HubClient.shared.searchTracks(query, offset: offset) else { moreFailed = true; return }
+        guard query == q else { return }
+        moreFailed = false
         let known = Set(tracks.map(\.ref))
         tracks += r.tracks.filter { !known.contains($0.ref) } // a page may repeat a track of an earlier page
         next = r.nextOffset

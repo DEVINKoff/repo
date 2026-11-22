@@ -50,8 +50,10 @@ struct Cover: View {
         .task(id: url) {
             guard let u = resolved else { image = nil; return }
             if let hit = ImageCache.shared.cached(u) { image = hit; return }
-            image = nil
-            image = await ImageCache.shared.image(u)
+            // keep showing the previous image until the new one is ready (no flash between tracks)
+            if let loaded = await ImageCache.shared.image(u) {
+                withAnimation(.easeOut(duration: 0.2)) { image = loaded }
+            }
         }
     }
 }

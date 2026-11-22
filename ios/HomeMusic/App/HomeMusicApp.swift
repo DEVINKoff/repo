@@ -67,11 +67,11 @@ struct MainTabs: View {
         @Bindable var picker = picker
         content
             .sheet(isPresented: $app.playerOpen) {
-                PlayerView().presentationDragIndicator(.hidden)
+                PlayerView()
             }
             .sheet(item: $picker.request) { PlaylistPickerSheet(request: $0) }
             .onChange(of: app.route) { _, r in
-                if r == .downloads { router.tab = .downloads; app.route = nil }
+                if r == .downloads { router.openDownloads(); app.route = nil }
             }
     }
 
@@ -103,9 +103,6 @@ struct MainTabs: View {
             }
             Tab("Библиотека", systemImage: "square.stack.fill", value: AppTab.library) {
                 NavigationStack(path: $router.library) { LibraryView().destinations() }
-            }
-            Tab("Загрузки", systemImage: "arrow.down.circle.fill", value: AppTab.downloads) {
-                NavigationStack(path: $router.downloads) { DownloadsView().destinations() }
             }
             .badge(downloads.activeCount)
             Tab("Ещё", systemImage: "ellipsis.circle.fill", value: AppTab.more) {

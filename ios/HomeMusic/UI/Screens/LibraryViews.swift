@@ -2,6 +2,7 @@ import SwiftUI
 
 struct LibraryView: View {
     @Environment(Library.self) private var library
+    @Environment(Downloads.self) private var downloads
     @State private var recent: [NdAlbumOut] = []
 
     var body: some View {
@@ -11,7 +12,19 @@ struct LibraryView: View {
                 row("Плейлисты", "music.note.list", .orange, .playlists)
                 row("Альбомы", "square.stack.fill", .blue, .ndAlbums)
                 row("Исполнители", "music.microphone", .purple, .ndArtists)
-                row("Загрузки", "arrow.down.circle.fill", .green, .downloads)
+                NavigationLink(value: Dest.downloads) {
+                    HStack {
+                        Label { Text("Загрузки").font(.title3) } icon: { Image(systemName: "arrow.down.circle.fill").foregroundStyle(.green) }
+                        Spacer()
+                        if downloads.activeCount > 0 {
+                            Text("\(downloads.activeCount)").font(.subheadline.weight(.semibold).monospacedDigit())
+                                .padding(.horizontal, 8).padding(.vertical, 2)
+                                .background(Color.accentColor, in: Capsule())
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
             }
             if !recent.isEmpty {
                 Section {
@@ -64,15 +77,34 @@ struct LikedView: View {
                     .listRowSeparator(.hidden)
                 switch part {
                 case .songs:
-                    if l.songs.isEmpty {
+                    // downloaded songs first, then ♥ that play from the sources until they are downloaded
+                    let downloaded = l.songs.filter { $0.isOwned || $0.ndSongId != nil }
+                    let pending = l.songs.filter { !($0.isOwned || $0.ndSongId != nil) }
+                    let songs = downloaded + pending
+                    if songs.isEmpty {
                         ContentUnavailableView("Пока пусто", systemImage: "heart", description: Text("Отмечайте песни ♥ — они появятся здесь"))
                     } else {
                         PlayShuffleButtons(
-                            play: { player.listenAll(l.songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
-                            shuffle: { player.listenAll(l.songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
+                            play: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
+                            shuffle: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
                             .listRowSeparator(.hidden)
-                        ForEach(Array(l.songs.enumerated()), id: \.element.ref) { i, t in
-                            TrackRow(track: t, list: l.songs, context: "liked", origin: "liked", smartPage: page, order: i)
+                        Section {
+                            ForEach(Array(downloaded.enumerated()), id: \.offset) { i, t in
+                                TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: i)
+                            }
+                        } header: {
+                            if !pending.isEmpty { Text("Скачанные · \(downloaded.count)") }
+                        }
+                        if !pending.isEmpty {
+                            Section {
+                                ForEach(Array(pending.enumerated()), id: \.offset) { i, t in
+                                    TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: downloaded.count + i)
+                                }
+                            } header: {
+                                Text("Ещё не скачаны · \(pending.count)")
+                            } footer: {
+                                Text("Играют из источников, пока Хаб их не скачает")
+                            }
                         }
                     }
                 case .albums:

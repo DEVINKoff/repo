@@ -18,7 +18,7 @@ enum Dest: Hashable {
     case web(path: String, title: String)
 }
 
-enum AppTab: Hashable { case home, library, downloads, more, search }
+enum AppTab: Hashable { case home, library, more, search }
 
 @MainActor
 @Observable
@@ -27,9 +27,15 @@ final class Router {
     var tab: AppTab = .home
     var home: [Dest] = []
     var library: [Dest] = []
-    var downloads: [Dest] = []
     var more: [Dest] = []
     var search: [Dest] = []
+
+    /// «Загрузки» live in the library now (a toast's «Загрузки» goes there).
+    func openDownloads() {
+        AppModel.shared.playerOpen = false
+        tab = .library
+        if library.last != .downloads { library.append(.downloads) }
+    }
 
     /// Opens a screen in the current tab (from the player: the sheet closes first).
     func go(_ d: Dest) {
@@ -37,7 +43,6 @@ final class Router {
         switch tab {
         case .home: home.append(d)
         case .library: library.append(d)
-        case .downloads: downloads.append(d)
         case .more: more.append(d)
         case .search: search.append(d)
         }
