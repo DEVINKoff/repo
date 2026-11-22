@@ -1,0 +1,55 @@
+# XcodeGen spec of the HomeMusic iOS app. The GitHub Actions workflow (.github/workflows/ios.yml) turns it into
+# HomeMusic.xcodeproj on a Mac runner and builds an unsigned IPA (sign it with Sideloadly / AltStore).
+name: HomeMusic
+options:
+  bundleIdPrefix: app.homemusic
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_PREVIEWS: "NO"
+targets:
+  HomeMusic:
+    type: application
+    platform: iOS
+    sources:
+      - HomeMusic
+    scheme: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.homemusic.ios
+        PRODUCT_NAME: HomeMusic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+    info:
+      path: HomeMusic/Info.plist
+      properties:
+        CFBundleDisplayName: HomeMusic
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIBackgroundModes: [audio]
+        ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: "HomeMusic подключается к вашему серверу HomeMusic в домашней сети."
+        NSAppTransportSecurity:
+          # the Hub on a home PC is plain http (http://192.168.1.10:8080) unless you set up HTTPS
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSPhotoLibraryUsageDescription: "Чтобы отправить ассистенту скриншоты плейлистов."
+        NSCameraUsageDescription: "Чтобы сфотографировать список песен для ассистента."
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
