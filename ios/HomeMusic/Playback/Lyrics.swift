@@ -218,7 +218,7 @@ struct LyricsView: View {
                 .scrollIndicators(.hidden)
             case .instrumental: placeholder("Инструментал", "music.note")
             case .missing: placeholder("Текст не найден", "text.badge.xmark")
-            case .loading, .idle: ProgressView().tint(.white).frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loading, .idle: ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
@@ -300,7 +300,7 @@ struct LyricLine: View, Equatable {
             if line.words.isEmpty {
                 Text(line.text.isEmpty ? "♪" : line.text)
                     .font(LyricsStyle.font)
-                    .foregroundStyle(.white.opacity(isNow ? 1 : passed ? 0.28 : 0.38))
+                    .foregroundStyle(Color.primary.opacity(isNow ? 1 : passed ? 0.28 : 0.38))
             } else if isNow {
                 SungLine(line: line)
             } else {
@@ -309,7 +309,7 @@ struct LyricLine: View, Equatable {
                         Text(w.text).font(LyricsStyle.font)
                     }
                 }
-                .foregroundStyle(.white.opacity(passed ? 0.28 : 0.38))
+                .foregroundStyle(Color.primary.opacity(passed ? 0.28 : 0.38))
             }
         }
         .blur(radius: isNow ? 0 : far ? 1.4 : 0.5)
@@ -352,12 +352,12 @@ struct SungWord: View {
         let active = progress > 0 && progress < 1
         Text(word)
             .font(LyricsStyle.font)
-            .foregroundStyle(.white.opacity(0.32))
+            .foregroundStyle(Color.primary.opacity(0.32))
             .overlay(alignment: .leading) {
                 // the light sweeps through the word with a soft edge
                 Text(word)
                     .font(LyricsStyle.font)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .mask(alignment: .leading) {
                         GeometryReader { g in
                             if progress >= 1 {
@@ -373,7 +373,7 @@ struct SungWord: View {
                         }
                     }
             }
-            .shadow(color: .white.opacity(active ? 0.55 : 0), radius: active ? 10 : 0)
+            .shadow(color: Color.primary.opacity(active ? 0.4 : 0), radius: active ? 10 : 0)
             .offset(y: active ? -2.5 * sin(progress * .pi) : 0)
             .scaleEffect(active ? 1 + 0.04 * sin(progress * .pi) : 1, anchor: .bottom)
     }

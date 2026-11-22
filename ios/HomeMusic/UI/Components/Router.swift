@@ -102,7 +102,7 @@ extension View {
     /// Prominent glass button style on iOS 26, bordered prominent before it.
     @ViewBuilder
     func prominentButton() -> some View {
-        if #available(iOS 26.0, *) { self.buttonStyle(.glassProminent) } else { self.buttonStyle(.borderedProminent) }
+        if #available(iOS 26.0, *) { self.buttonStyle(.glassProminent).foregroundStyle(Theme.onAccent) } else { self.buttonStyle(.borderedProminent).foregroundStyle(Theme.onAccent) }
     }
 
     @ViewBuilder

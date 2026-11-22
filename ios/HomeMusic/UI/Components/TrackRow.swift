@@ -48,15 +48,14 @@ struct TrackRow: View {
         .contextMenu { TrackMenuItems(track: track, context: context) }
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button { player.playNext([QueueTrack(track, withSong: withSong)], context: context) } label: {
-                Label("Играть следующим", systemImage: "text.line.first.and.arrowtriangle.forward")
+                Label("Играть следующим", systemImage: "text.insert")
             }.tint(.purple)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             Button { player.addToQueue([QueueTrack(track, withSong: withSong)], context: context) } label: {
-                Label("В очередь", systemImage: "text.line.last.and.arrowtriangle.forward")
+                Label("В очередь", systemImage: "text.badge.plus")
             }.tint(.orange)
         }
-        .rowTransition()
         .onAppear { if !track.isOwned { OnScreen.shared.appear(track.ref, order: order) } }
         .onDisappear { OnScreen.shared.disappear(track.ref) }
     }
@@ -158,10 +157,10 @@ struct TrackMenuItems: View {
             }
             if !inPlayer {
                 Button { player.playNext([QueueTrack(track)], context: context) } label: {
-                    Label("Играть следующим", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    Label("Играть следующим", systemImage: "text.insert")
                 }
                 Button { player.addToQueue([QueueTrack(track)], context: context) } label: {
-                    Label(player.track == nil ? "Слушать" : "Добавить в очередь", systemImage: "text.line.last.and.arrowtriangle.forward")
+                    Label(player.track == nil ? "Слушать" : "Добавить в очередь", systemImage: player.track == nil ? "play.fill" : "text.badge.plus")
                 }
             }
         }

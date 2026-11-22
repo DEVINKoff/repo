@@ -119,7 +119,9 @@ struct MoreView: View {
                 Toggle(isOn: Binding(get: { smart.enabled }, set: { smart.enabled = $0 })) {
                     Label("Умное перемешивание", systemImage: "sparkles")
                 }
+                .tint(Theme.toggle)
                 Toggle(isOn: $light) { Label("Экономия трафика", systemImage: "antenna.radiowaves.left.and.right") }
+                    .tint(Theme.toggle)
                     .onChange(of: light) { Settings.lightOnCellular = light }
             } header: { Text("Воспроизведение") } footer: {
                 Text("Умное перемешивание добавляет рекомендации между песнями плейлистов и «Понравившихся». Экономия трафика: в сотовой сети Хаб отдаёт лёгкую копию (Opus 160 кбит/с).")
@@ -226,6 +228,7 @@ struct AppearanceSection: View {
                 ForEach(AppearanceChoice.allCases) { Text($0.title).tag($0) }
             } label: { Label("Тема", systemImage: "circle.lefthalf.filled") }
             Toggle(isOn: $theme.motionCovers) { Label("Живые обложки", systemImage: "play.rectangle.on.rectangle") }
+                .tint(Theme.toggle)
         } header: { Text("Оформление") } footer: {
             Text("Живые обложки — анимированные обложки альбомов из Apple Music в плеере, когда они есть у альбома.")
         }

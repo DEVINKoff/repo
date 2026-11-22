@@ -105,21 +105,21 @@ struct QueueView: View {
                     Spacer()
                     if player.smart { Label("Умное перемешивание", systemImage: "sparkles").font(.caption) }
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .textCase(nil)
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
     }
 }
 
 struct AirPlayButton: UIViewRepresentable {
     func makeUIView(context: Context) -> AVRoutePickerView {
         let v = AVRoutePickerView()
-        v.tintColor = UIColor.white.withAlphaComponent(0.6)
-        v.activeTintColor = .white
+        v.tintColor = UIColor.label.withAlphaComponent(0.55)
+        v.activeTintColor = .label
         v.prioritizesVideoDevices = false
         return v
     }

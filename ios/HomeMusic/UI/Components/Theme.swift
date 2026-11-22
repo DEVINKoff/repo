@@ -31,8 +31,13 @@ enum AccentChoice: String, CaseIterable, Identifiable {
         case .coral: (0xF0533A, 0xFF7A63)
         case .rose: (0xE0336E, 0xFF6B9A)
         case .violet: (0x9B3FE0, 0xC384FF)
-        case .mono: (0x1C1C1E, 0xF2F2F7)
+        case .mono: (0x1C1C1E, 0xE8E8ED)
         }
+    }
+
+    var onColor: Color {
+        guard self == .mono else { return .white }
+        return Color(UIColor { $0.userInterfaceStyle == .dark ? .black : .white })
     }
 
     var color: Color {
@@ -76,6 +81,10 @@ extension UIColor {
 enum Theme {
     /// The accent the user picked in «Ещё → Оформление» (views that read it redraw when it changes).
     @MainActor static var accent: Color { AppTheme.shared.accent.color }
+    /// Text and icons drawn on the accent (black on «Моно» in the dark theme, white otherwise).
+    @MainActor static var onAccent: Color { AppTheme.shared.accent.onColor }
+    /// Switches: «Моно» would draw a white knob on a white track, so they stay green there.
+    @MainActor static var toggle: Color { AppTheme.shared.accent == .mono ? .green : accent }
     static let corner: CGFloat = 16
     static let spring = Animation.spring(response: 0.42, dampingFraction: 0.82)
 }

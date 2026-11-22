@@ -11,6 +11,8 @@ struct PlayerView: View {
     @Environment(Wave.self) private var wave
     @Environment(\.dismiss) private var dismiss
     @State private var mode: Mode = .cover
+    /// the artists of a track with several, to pick which one to open
+    @State private var artistChoice: [QueueTrack.Artist] = []
 
     var body: some View {
         GeometryReader { geo in
@@ -54,15 +56,21 @@ struct PlayerView: View {
                         }
                     }
                     .padding(.horizontal, 24)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .animation(.spring(response: 0.45, dampingFraction: 0.85), value: mode)
                 } else {
-                    ContentUnavailableView("Ничего не играет", systemImage: "music.note").foregroundStyle(.white)
+                    ContentUnavailableView("Ничего не играет", systemImage: "music.note")
                 }
             }
         }
-        .preferredColorScheme(.dark)
-        .presentationBackground(.black)
+        .presentationBackground(Color(.systemBackground))
+        .confirmationDialog("Перейти к исполнителю", isPresented: Binding(get: { !artistChoice.isEmpty }, set: { if !$0 { artistChoice = [] } }),
+                            titleVisibility: .visible) {
+            ForEach(artistChoice, id: \.name) { a in
+                Button(a.name) { open(a) }
+            }
+            Button("Отмена", role: .cancel) {}
+        }
         .presentationDragIndicator(.visible)
     }
 
@@ -155,7 +163,7 @@ struct PlayerView: View {
         Button { Task { await stars.toggle(.track(t), context: player.context) } } label: {
             Image(systemName: liked ? "heart.fill" : "heart")
                 .font(.title3)
-                .foregroundStyle(liked ? Theme.accent : .white)
+                .foregroundStyle(liked ? Theme.accent : .primary)
                 .symbolEffect(.bounce, value: liked)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 44, height: 44)
@@ -180,13 +188,33 @@ struct PlayerView: View {
         .buttonStyle(.pressable)
     }
 
+    /// Every artist of the track: its credits, else the names in its artist line («A, B feat. C»).
+    private func artistsOf(_ t: QueueTrack) -> [QueueTrack.Artist] {
+        if let list = t.artists?.filter({ !$0.name.isEmpty }), list.count > 1 { return list }
+        let names = t.artist
+            .replacingOccurrences(of: #"\s+(feat\.?|ft\.?|featuring|x|×|&|и)\s+"#, with: ",", options: [.regularExpression, .caseInsensitive])
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        var seen = Set<String>()
+        let unique = names.filter { seen.insert(Norm.key($0)).inserted }
+        if unique.count > 1 {
+            let known = t.artists ?? []
+            return unique.map { n in QueueTrack.Artist(name: n, ref: known.first { Norm.key($0.name) == Norm.key(n) }?.ref) }
+        }
+        return [QueueTrack.Artist(name: t.artists?.first?.name ?? t.artist, ref: t.artistRef ?? t.artists?.first?.ref)]
+    }
+
     private func openArtist(_ t: QueueTrack) {
-        if let a = t.artistRef ?? t.artists?.first(where: { $0.ref != nil })?.ref {
-            Router.shared.go(.catalogArtist(a))
+        let all = artistsOf(t)
+        if all.count > 1 { artistChoice = all } else if let a = all.first { open(a) }
+    }
+
+    private func open(_ a: QueueTrack.Artist) {
+        if let ref = a.ref {
+            Router.shared.go(.catalogArtist(ref))
             return
         }
         // a library or file track carries no catalog ref: find the artist by name
-        let name = t.artists?.first?.name ?? t.artist.components(separatedBy: ",").first ?? t.artist
+        let name = a.name
         Task {
             guard let res = try? await HubClient.shared.search(name), !res.artists.isEmpty else {
                 Toasts.info("Исполнитель «\(name)» не найден в каталоге")
@@ -231,10 +259,11 @@ struct PlayerView: View {
                 ZStack {
                     Circle().fill(Theme.accent)
                     if player.phase == .resolving || player.phase == .loading {
-                        ProgressView().tint(.white).controlSize(.large)
+                        ProgressView().tint(Theme.onAccent).controlSize(.large)
                     } else {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 34, weight: .semibold))
+                            .foregroundStyle(Theme.onAccent)
                             .contentTransition(.symbolEffect(.replace))
                             .offset(x: player.isPlaying ? 0 : 2)
                     }
@@ -278,7 +307,7 @@ struct PlayerView: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(on ? Theme.accent : .white.opacity(0.55))
+                .foregroundStyle(on ? Theme.accent : Color.primary.opacity(0.55))
                 .contentTransition(.symbolEffect(.replace))
                 .symbolEffect(.bounce, value: on)
                 .frame(width: 44, height: 44)
@@ -301,8 +330,8 @@ struct Scrubber: View {
             GeometryReader { g in
                 let w = g.size.width
                 ZStack(alignment: .leading) {
-                    Capsule().fill(.white.opacity(0.18))
-                    Capsule().fill(drag == nil ? Color.white : Theme.accent)
+                    Capsule().fill(Color.primary.opacity(0.15))
+                    Capsule().fill(drag == nil ? Color.primary : Theme.accent)
                         .frame(width: max(0, min(w, w * shown / total)))
                 }
                 .frame(height: drag == nil ? 5 : 10)
@@ -339,13 +368,14 @@ struct Scrubber: View {
     }
 }
 
-/// Dark, with the cover's colours glowing from the top (not a full-screen blur).
+/// A plain surface (dark or light, as the app's theme), with the cover's colours glowing from the top.
 struct PlayerBackground: View {
     var url: String?
     var body: some View {
         GeometryReader { g in
             ZStack(alignment: .top) {
-                Color(red: 0.035, green: 0.035, blue: 0.05)
+                Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.035, green: 0.035, blue: 0.05, alpha: 1)
+                                                               : UIColor(red: 0.97, green: 0.97, blue: 0.98, alpha: 1) })
                 Cover(url: url, size: g.size.width, corner: 0, pixels: 160)
                     .frame(width: g.size.width, height: g.size.width)
                     .blur(radius: 80, opaque: true)

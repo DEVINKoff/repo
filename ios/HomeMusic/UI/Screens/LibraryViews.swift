@@ -24,11 +24,12 @@ struct LibraryView: View {
             if !recent.isEmpty {
                 Section {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 20) {
+                        // buttons, not NavigationLinks: several links in one List row all fire on a tap
                         ForEach(recent) { a in
-                            NavigationLink(value: Dest.ndAlbum(a.id)) {
+                            Button { Router.shared.go(.ndAlbum(a.id)) } label: {
                                 AlbumCard(title: a.title, subtitle: a.artist, cover: a.coverUrl, width: 160)
                             }
-                            .buttonStyle(.pressable)
+                            .buttonStyle(PressableStyle())
                         }
                     }
                     .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))

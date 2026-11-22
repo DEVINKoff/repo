@@ -68,12 +68,23 @@ struct PlayShuffleButtons: View {
     var body: some View {
         HStack(spacing: 12) {
             Button(action: play) {
-                Label("Слушать", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity, minHeight: 36)
+                HStack(spacing: 8) {
+                    Image(systemName: "play.fill")
+                    Text("Слушать")
+                }
+                .font(.headline)
+                .foregroundStyle(Theme.onAccent)
+                .frame(maxWidth: .infinity, minHeight: 36)
             }
             .prominentButton()
             .tint(Theme.accent)
             Button(action: shuffle) {
-                Label("Перемешать", systemImage: "shuffle").font(.headline).frame(maxWidth: .infinity, minHeight: 36)
+                HStack(spacing: 8) {
+                    Image(systemName: "shuffle")
+                    Text("Перемешать")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity, minHeight: 36)
             }
             .glassButton()
             .tint(.primary)
