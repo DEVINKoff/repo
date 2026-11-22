@@ -182,11 +182,12 @@ struct CatalogArtistView: View {
     /// Every release the catalog has for the artist (albums first, then singles and EPs, then compilations), plus the
     /// albums of the user's library that the catalog lacks, with a filter by kind.
     @ViewBuilder private func discography(_ p: ArtistPageOut) -> some View {
-        // a library «album» of one to six songs is a single / EP
-        let libAlbums = libraryAlbums.filter { ($0.songCount ?? 0) >= 7 }
-        let libSingles = libraryAlbums.filter { ($0.songCount ?? 0) < 7 }
-        let albums = byDate(p.albums).map { release($0) } + libAlbums.map { release($0) }
-        let singles = byDate(p.singles).map { release($0) } + libSingles.map { release($0) }
+        // albums and EPs together (4+ tracks); singles apart — the Hub types releases by their real track count
+        let libAlbums = libraryAlbums.filter { ($0.songCount ?? 0) >= 4 }
+        let libSingles = libraryAlbums.filter { ($0.songCount ?? 0) < 4 }
+        let eps = p.singles.filter { $0.recordType == "ep" }
+        let albums = byDate(p.albums + eps).map { release($0) } + libAlbums.map { release($0) }
+        let singles = byDate(p.singles.filter { $0.recordType != "ep" }).map { release($0) } + libSingles.map { release($0) }
         let comps = byDate(p.compilations).map { release($0) }
         let shown: [Release] = kind == 1 ? albums : kind == 2 ? singles : kind == 3 ? comps : albums + singles + comps
         let total = albums.count + singles.count + comps.count
@@ -195,7 +196,7 @@ struct CatalogArtistView: View {
                 SectionTitle(text: "Дискография · \(total)")
                 Picker("", selection: $kind.animation(Theme.spring)) {
                     Text("Все").tag(0)
-                    if !albums.isEmpty { Text("Альбомы · \(albums.count)").tag(1) }
+                    if !albums.isEmpty { Text("Альбомы и EP · \(albums.count)").tag(1) }
                     if !singles.isEmpty { Text("Синглы · \(singles.count)").tag(2) }
                     if !comps.isEmpty { Text("Сборники").tag(3) }
                 }
