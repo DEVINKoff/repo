@@ -600,4 +600,4 @@ enum HubEvent: Sendable {
     case reconnect
 }
 
-struct MotionOut: Codable, Sendable { var url: String? }
+struct MotionOut: Codable, Sendable { var url: String?; var status: String? }

@@ -7,32 +7,36 @@ import UIKit
 @MainActor
 enum MotionCovers {
     private static var known: [String: URL?] = [:]
-    private static var pending: [String: Task<URL?, Never>] = [:]
+    private static var pending: [String: Task<(url: URL?, status: String), Never>] = [:]
 
     static func key(_ t: QueueTrack) -> String {
         Norm.key(t.artist) + "|" + (t.album.map { Norm.key($0) }.flatMap { $0.isEmpty ? nil : $0 } ?? "t:" + Norm.key(t.title))
     }
 
-    static func url(for t: QueueTrack) async -> URL? {
+    static func url(for t: QueueTrack) async -> URL? { await lookup(t).url }
+
+    /// The animated cover of the track's album and why there is none: found / none / no_album / apple_unreachable.
+    /// «Apple unreachable» is not remembered (asked again next time).
+    static func lookup(_ t: QueueTrack) async -> (url: URL?, status: String) {
         let key = key(t)
-        let album = t.album ?? ""
-        if let hit = known[key] { return hit }
+        if let hit = known[key] { return (hit, hit == nil ? "none" : "found") }
         if let task = pending[key] { return await task.value }
         let ref = t.albumRef?.hasPrefix("am:") == true ? t.albumRef : nil
-        let task = Task<URL?, Never> {
-            let out = try? await HubClient.shared.motionCover(artist: t.artist, album: album, track: t.title, ref: ref)
-            return out?.url.flatMap(URL.init(string:))
+        let album = t.album ?? ""
+        let task = Task<(url: URL?, status: String), Never> {
+            guard let out = try? await HubClient.shared.motionCover(artist: t.artist, album: album, track: t.title, ref: ref) else {
+                return (nil, "apple_unreachable")
+            }
+            return (out.url.flatMap(URL.init(string:)), out.status ?? (out.url == nil ? "none" : "found"))
         }
         pending[key] = task
-        let url = await task.value
+        let res = await task.value
         pending[key] = nil
-        if url != nil || !Task.isCancelled { known[key] = url }
-        return url
+        if res.status != "apple_unreachable" { known[key] = res.url }
+        return res
     }
 }
 
-/// The player's cover: the still image, with Apple Music's animated cover over it when the album has one (nothing
-/// moves otherwise). A faint button in the corner turns animated covers on and off.
 struct LiveCover: View {
     let track: QueueTrack
     let size: CGFloat

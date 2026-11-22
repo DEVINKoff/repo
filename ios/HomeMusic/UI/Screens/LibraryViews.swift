@@ -89,6 +89,7 @@ struct LikedView: View {
     @State private var live: Set<String> = []
     @State private var checked = 0
     @State private var toCheck = 0
+    @State private var unreachable = 0
 
     private let page = SmartPage(context: "liked", title: nil)
 
@@ -118,18 +119,20 @@ struct LikedView: View {
         let todo = Array(byKey.values)
         toCheck = todo.count
         checked = 0
-        await withTaskGroup(of: (String, Bool).self) { group in
+        unreachable = 0
+        await withTaskGroup(of: (String, String).self) { group in
             var next = 0
             func add() {
                 guard next < todo.count else { return }
                 let q = todo[next]
                 next += 1
-                group.addTask { (await MotionCovers.key(q), await MotionCovers.url(for: q) != nil) }
+                group.addTask { (await MotionCovers.key(q), await MotionCovers.lookup(q).status) }
             }
             for _ in 0..<4 { add() }
-            for await (key, has) in group {
+            for await (key, status) in group {
                 checked += 1
-                if has { withAnimation(.smooth) { _ = live.insert(key) } }
+                if status == "found" { withAnimation(.smooth) { _ = live.insert(key) } }
+                if status == "apple_unreachable" { unreachable += 1 }
                 if Task.isCancelled { group.cancelAll(); return }
                 add()
             }
@@ -139,29 +142,25 @@ struct LikedView: View {
     var body: some View {
         Loading(value: liked, error: error, retry: { Task { await load() } }) { l in
             List {
-                Picker("", selection: $part) { ForEach(Part.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
-                    .pickerStyle(.segmented)
-                    .listRowSeparator(.hidden)
                 switch part {
                 case .songs:
+                    let songs = shown(l.songs)
+                    header(songs, total: l.songs.count)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 10, trailing: 16))
                     if l.songs.isEmpty {
                         ContentUnavailableView("Пока пусто", systemImage: "heart", description: Text("Отмечайте песни ♥ — они появятся здесь"))
-                    } else {
-                        let songs = shown(l.songs)
-                        PlayShuffleButtons(
-                            play: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page) },
-                            shuffle: { player.listenAll(songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page) })
-                            .listRowSeparator(.hidden)
-                        songsBar(l.songs)
-                            .listRowSeparator(.hidden)
-                        if onlyLive && songs.isEmpty && checked >= toCheck {
+                    } else if onlyLive && songs.isEmpty && checked >= toCheck {
+                        if unreachable >= checked && checked > 0 {
+                            ContentUnavailableView("Apple Music недоступен", systemImage: "wifi.exclamationmark",
+                                                   description: Text("Хаб не смог связаться с music.apple.com — живые обложки берутся оттуда. Проверьте интернет или VPN на компьютере с Хабом."))
+                        } else {
                             ContentUnavailableView("Нет живых обложек", systemImage: "livephoto.slash",
                                                    description: Text("Ни у одного альбома понравившихся песен нет анимированной обложки в Apple Music"))
                         }
-                        ForEach(Array(songs.enumerated()), id: \.element.ref) { i, t in
-                            TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: i)
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
+                    }
+                    ForEach(Array(songs.enumerated()), id: \.element.ref) { i, t in
+                        TrackRow(track: t, list: songs, context: "liked", origin: "liked", smartPage: page, order: i)
                     }
                 case .albums:
                     ForEach(l.albums) { a in
@@ -180,66 +179,84 @@ struct LikedView: View {
             }
             .listStyle(.plain)
         }
-        .navigationTitle("Понравившиеся")
+        .navigationTitle(part == .songs ? "Понравившиеся" : part.rawValue)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { optionsMenu }
+        }
         .animation(.smooth(duration: 0.35), value: sort)
         .animation(.smooth(duration: 0.35), value: onlyLive)
+        .animation(.smooth(duration: 0.35), value: part)
         .task(id: onlyLive) { if onlyLive, let l = liked { await checkLive(l.songs) } }
         .task(id: library.generation) { await load() }
         .onChange(of: stars.version) { Task { try? await Task.sleep(for: .seconds(1.5)); await load() } }
         .refreshable { await load() }
     }
 
+    /// One row over the songs: ▶ «Слушать», shuffle, and what is shown (count, sort, the live-covers filter).
+    private func header(_ songs: [Track], total: Int) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                player.listenAll(songs.map { QueueTrack($0) }, shuffle: false, context: "liked", origin: "liked", smartPage: page)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.fill")
+                    Text("Слушать")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Theme.onAccent)
+                .padding(.horizontal, 16)
+                .frame(height: 38)
+                .background(Theme.accent, in: Capsule())
+            }
+            .buttonStyle(.pressable)
+            .disabled(songs.isEmpty)
+            Button {
+                player.listenAll(songs.map { QueueTrack($0) }, shuffle: true, context: "liked", origin: "liked", smartPage: page)
+            } label: {
+                Image(systemName: "shuffle").font(.subheadline.weight(.semibold)).frame(width: 38, height: 38)
+            }
+            .buttonStyle(.pressable)
+            .glassCircle()
+            .disabled(songs.isEmpty)
+            Spacer(minLength: 4)
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(onlyLive ? "\(songs.count) с живыми обложками" : Format.tracks(total))
+                    .font(.footnote.weight(.semibold))
+                    .contentTransition(.numericText())
+                Text(onlyLive && checked < toCheck ? "проверено \(checked) из \(toCheck)" : sort.title.lowercased())
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
+            }
+            .lineLimit(1)
+        }
+    }
+
+    /// The screen's options in one menu: the part, the sort, the live-covers filter.
+    private var optionsMenu: some View {
+        Menu {
+            Picker("Раздел", selection: $part) {
+                ForEach(Part.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            if part == .songs {
+                Section("Сортировка") {
+                    Picker("Сортировка", selection: $sort) {
+                        ForEach(LikedSort.allCases) { Label($0.title, systemImage: $0.icon).tag($0) }
+                    }
+                }
+                Section {
+                    Toggle(isOn: $onlyLive) { Label("Только живые обложки", systemImage: "livephoto") }
+                }
+            }
+        } label: {
+            Image(systemName: onlyLive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                .symbolEffect(.bounce, value: onlyLive)
+        }
+    }
+
     private func load() async {
         do { liked = try await HubClient.shared.ndLiked(); error = nil } catch { self.error = error.localizedDescription }
     }
 
-    /// The sort menu and the «live covers only» switch above the songs.
-    private func songsBar(_ all: [Track]) -> some View {
-        HStack(spacing: 10) {
-            Menu {
-                Picker("Сортировка", selection: $sort) {
-                    ForEach(LikedSort.allCases) { Label($0.title, systemImage: $0.icon).tag($0) }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.up.arrow.down")
-                    Text(sort.title).lineLimit(1)
-                }
-                .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .frame(height: 34)
-                .glassCapsule(interactive: true)
-            }
-            Button {
-                onlyLive.toggle()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: onlyLive ? "livephoto" : "livephoto.slash")
-                        .contentTransition(.symbolEffect(.replace))
-                    Text("Живые обложки")
-                    if onlyLive && checked < toCheck {
-                        ProgressView().controlSize(.mini)
-                    }
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(onlyLive ? Theme.onAccent : .primary)
-                .padding(.horizontal, 14)
-                .frame(height: 34)
-                .glassCapsule(interactive: true, tint: onlyLive ? Theme.accent : nil)
-            }
-            .buttonStyle(.pressable)
-            .sensoryFeedback(.selection, trigger: onlyLive)
-            Spacer(minLength: 0)
-        }
-        .buttonStyle(.plain)
-        .overlay(alignment: .bottomLeading) {
-            if onlyLive && checked < toCheck {
-                Text("Проверено альбомов: \(checked) из \(toCheck)").font(.caption2).foregroundStyle(.secondary)
-                    .offset(y: 18)
-            }
-        }
-        .padding(.bottom, onlyLive && checked < toCheck ? 14 : 0)
-    }
 }
 
 enum LikedSort: String, CaseIterable, Identifiable {

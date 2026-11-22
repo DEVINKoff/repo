@@ -12,6 +12,7 @@ struct PlayerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var mode: Mode = .cover
     @State private var isLandscape = false
+    @Namespace private var hero
     /// the artists of a track with several, to pick which one to open
     @State private var artistChoice: [QueueTrack.Artist] = []
 
@@ -220,6 +221,8 @@ struct PlayerView: View {
         }
         .buttonStyle(.plain)
         .glassCircle()
+        // one heart: it flies between the title row and the compact row (never two on screen)
+        .matchedGeometryEffect(id: "like", in: hero)
         .sensoryFeedback(.impact(weight: .light), trigger: liked)
     }
 
