@@ -80,8 +80,7 @@ struct RootView: View {
             }
             ToastOverlay()
             if splash {
-                LaunchSplash { withAnimation(.smooth(duration: 0.5)) { splash = false } }
-                    .transition(.opacity)
+                LaunchSplash { splash = false }
                     .zIndex(10)
             }
         }
@@ -173,67 +172,132 @@ struct NothingPlaying: View {
     }
 }
 
-/// The opening, about 1.8 s: a living mesh gradient in the accent's colours, drops of liquid glass orbiting over it
-/// and melting into each other, then drawn together into one lens; a flash of light runs across it and the lens
-/// opens out over the whole screen into the app.
+/// The opening, about 2.3 s, all of it a function of time (no steps):
+/// 1. a living mesh gradient in the accent's colours; drops of liquid glass orbit over it, each with a prismatic rim
+///    and its light split into red, green and blue;
+/// 2. the drops gather into one lens; prismatic sparks scatter from it and a rainbow ring of dispersion runs out;
+/// 3. a flash of light crosses the lens;
+/// 4. the lens morphs into the shape of the screen while the gradient fades: the app shows through the glass, and
+///    the glass dissolves into it.
 struct LaunchSplash: View {
     let done: () -> Void
     @State private var start = Date()
-    @State private var phase = 0 // 0 — orbit; 1 — gather into one; 2 — flash; 3 — open out
+    @State private var finished = false
+
+    private static let total = 2.35
 
     var body: some View {
-        TimelineView(.animation) { tl in
-            let t = tl.date.timeIntervalSince(start)
-            ZStack {
-                LaunchMesh(t: t)
-                    .scaleEffect(phase == 3 ? 1.25 : 1)
-                    .opacity(phase == 3 ? 0 : 1)
-                    .ignoresSafeArea()
-                drops(t)
-                    .scaleEffect(phase == 3 ? 14 : 1)
-                    .opacity(phase == 3 ? 0 : 1)
-                    .blur(radius: phase == 3 ? 10 : 0)
-                // the flash across the lens
-                LinearGradient(colors: [.clear, .white.opacity(0.85), .clear], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: 70, height: 260)
-                    .rotationEffect(.degrees(24))
-                    .offset(x: phase >= 2 ? 200 : -200)
-                    .opacity(phase == 2 ? 1 : 0)
-                    .blendMode(.plusLighter)
-                    .mask(Circle().frame(width: 150, height: 150))
+        GeometryReader { g in
+            TimelineView(.animation) { tl in
+                let t = tl.date.timeIntervalSince(start)
+                frame(t, g.size)
             }
         }
-        .allowsHitTesting(phase < 3)
+        .ignoresSafeArea()
+        .allowsHitTesting(!finished)
         .task {
             start = Date()
-            try? await Task.sleep(for: .milliseconds(850))
-            withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) { phase = 1 }
-            try? await Task.sleep(for: .milliseconds(420))
-            withAnimation(.easeInOut(duration: 0.45)) { phase = 2 }
-            try? await Task.sleep(for: .milliseconds(330))
-            withAnimation(.easeIn(duration: 0.5)) { phase = 3 }
-            try? await Task.sleep(for: .milliseconds(420))
+            try? await Task.sleep(for: .seconds(Self.total))
+            finished = true
             done()
         }
     }
 
-    /// Five drops on their own orbits (radius, speed, size), gathered into one lens from phase 1.
-    private func drops(_ t: Double) -> some View {
-        let orbits: [(r: CGFloat, speed: Double, size: CGFloat, phase: Double)] = [
-            (92, 1.6, 84, 0), (74, -2.1, 58, 1.3), (110, 1.15, 46, 2.6), (54, 2.6, 40, 3.8), (128, -1.4, 34, 5.0),
-        ]
-        let gathered = phase >= 1
-        return glassGroup {
+    // MARK: timing
+
+    private static func clamp(_ x: Double) -> Double { min(1, max(0, x)) }
+    private static func ease(_ x: Double) -> Double { let c = clamp(x); return c * c * (3 - 2 * c) }
+    private static func easeOut(_ x: Double) -> Double { let c = clamp(x); return 1 - pow(1 - c, 3) }
+    private static func lerp(_ a: CGFloat, _ b: CGFloat, _ k: Double) -> CGFloat { a + (b - a) * CGFloat(k) }
+
+    private static let orbits: [(r: CGFloat, speed: Double, size: CGFloat, phase: Double)] = [
+        (96, 1.5, 86, 0), (72, -2.0, 60, 1.3), (118, 1.1, 46, 2.6), (52, 2.5, 40, 3.8), (136, -1.3, 34, 5.0), (84, 1.9, 28, 0.7),
+    ]
+
+    @ViewBuilder private func frame(_ t: Double, _ size: CGSize) -> some View {
+        let gather = Self.ease((t - 0.85) / 0.42)          // the drops come together
+        let burst = (t - 1.15) / 0.85                       // sparks fly out
+        let ring = (t - 1.22) / 0.7                         // the dispersion ring
+        let flash = (t - 1.32) / 0.32                       // the light across the lens
+        let morph = Self.ease((t - 1.6) / 0.42)             // lens → screen
+        let dissolve = Self.ease((t - 1.98) / 0.35)         // the glass melts into the app
+        let lens: CGFloat = 150
+        let w = Self.lerp(lens, size.width, morph)
+        let h = Self.lerp(lens, size.height, morph)
+        let corner = Self.lerp(lens / 2, 54, morph)
+
+        ZStack {
+            LaunchMesh(t: t)
+                .scaleEffect(1 + 0.15 * morph)
+                .opacity(1 - morph)
+
+            // soft caustic light the glass bends
+            Circle()
+                .fill(RadialGradient(colors: [.white.opacity(0.35), .clear], center: .center, startRadius: 0, endRadius: 160))
+                .frame(width: 320, height: 320)
+                .offset(x: 60 * sin(t * 1.7), y: 50 * cos(t * 1.3))
+                .blendMode(.plusLighter)
+                .opacity(0.7 * (1 - morph))
+
+            if morph <= 0 {
+                drops(t, gather: gather)
+            } else {
+                GlassPane(cornerRadius: corner)
+                    .frame(width: w, height: h)
+                    .opacity(1 - dissolve)
+            }
+
+            // the prismatic rim of the lens (and then of the screen-shaped glass)
+            PrismRim(cornerRadius: corner, spin: t, width: 2.5 + 2 * (1 - morph))
+                .frame(width: w, height: h)
+                .opacity(gather * (1 - dissolve) * 0.9)
+
+            if burst > 0 && burst < 1 { Sparks(k: burst) }
+
+            if ring > 0 && ring < 1 {
+                Circle()
+                    .strokeBorder(AngularGradient(colors: Prism.colors, center: .center), lineWidth: 10 * (1 - ring) + 1)
+                    .frame(width: lens, height: lens)
+                    .scaleEffect(1 + 3.2 * Self.easeOut(ring))
+                    .blur(radius: 3 + 6 * ring)
+                    .opacity(0.8 * (1 - ring))
+                    .blendMode(.plusLighter)
+            }
+
+            if flash > 0 && flash < 1 {
+                LinearGradient(colors: [.clear, .white.opacity(0.9), .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 60, height: 240)
+                    .rotationEffect(.degrees(24))
+                    .offset(x: -160 + 320 * Self.ease(flash))
+                    .blendMode(.plusLighter)
+                    .mask(Circle().frame(width: lens, height: lens))
+            }
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
+    /// The orbiting drops, each with a prismatic rim and a highlight split into red, green and blue.
+    private func drops(_ t: Double, gather: Double) -> some View {
+        glassGroup {
             ZStack {
-                ForEach(0..<orbits.count, id: \.self) { i in
-                    let o = orbits[i]
+                ForEach(0..<Self.orbits.count, id: \.self) { i in
+                    let o = Self.orbits[i]
                     let a = o.phase + t * o.speed
-                    // the orbits breathe in and out a little
-                    let r = o.r * (0.8 + 0.2 * sin(t * 2.4 + o.phase))
+                    let r = o.r * (0.8 + 0.2 * sin(t * 2.4 + o.phase)) * CGFloat(1 - gather)
+                    let d = Self.lerp(o.size, 150, gather)
                     Color.clear
-                        .frame(width: gathered ? 150 : o.size, height: gathered ? 150 : o.size)
+                        .frame(width: d, height: d)
                         .modifier(GlassDrop())
-                        .offset(x: gathered ? 0 : r * cos(a), y: gathered ? 0 : r * sin(a))
+                        .overlay { SplitHighlight(angle: a, size: d).opacity(1 - gather) }
+                        .overlay {
+                            Circle()
+                                .strokeBorder(AngularGradient(colors: Prism.colors, center: .center), lineWidth: 1.5)
+                                .rotationEffect(.radians(-a * 1.5))
+                                .blur(radius: 0.8)
+                                .opacity(0.55 * (1 - gather))
+                                .blendMode(.plusLighter)
+                        }
+                        .offset(x: r * cos(a), y: r * sin(a))
                 }
             }
         }
@@ -241,21 +305,100 @@ struct LaunchSplash: View {
 
     @ViewBuilder private func glassGroup<C: View>(@ViewBuilder _ c: () -> C) -> some View {
         if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 36) { c() }
+            GlassEffectContainer(spacing: 38) { c() }
         } else {
             c()
         }
     }
 }
 
-/// A round drop of liquid glass (frosted material before iOS 26).
+enum Prism {
+    static let colors: [Color] = [.red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink, .red]
+}
+
+/// A drop of liquid glass (frosted material before iOS 26).
 private struct GlassDrop: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
-            content.glassEffect(.regular.tint(.white.opacity(0.06)), in: Circle())
+            content.glassEffect(.regular.tint(.white.opacity(0.05)), in: Circle())
         } else {
             content.background(.ultraThinMaterial, in: Circle())
         }
+    }
+}
+
+/// The screen-shaped glass the lens becomes.
+private struct GlassPane: View {
+    let cornerRadius: CGFloat
+    var body: some View {
+        if #available(iOS 26.0, *) {
+            Color.clear.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).fill(.ultraThinMaterial)
+        }
+    }
+}
+
+/// A rainbow edge (the glass splitting light), slowly turning; red, green and blue copies a hair apart.
+private struct PrismRim: View {
+    let cornerRadius: CGFloat
+    let spin: Double
+    let width: CGFloat
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        ZStack {
+            shape.strokeBorder(AngularGradient(colors: Prism.colors, center: .center, angle: .degrees(spin * 70)), lineWidth: width)
+                .blur(radius: 1.5)
+            shape.strokeBorder(Color.red.opacity(0.6), lineWidth: 1).offset(x: -1.6, y: -0.6)
+            shape.strokeBorder(Color.blue.opacity(0.6), lineWidth: 1).offset(x: 1.6, y: 0.6)
+        }
+        .blendMode(.plusLighter)
+    }
+}
+
+/// A drop's highlight split into red, green and blue (chromatic dispersion), turning with the drop.
+private struct SplitHighlight: View {
+    let angle: Double
+    let size: CGFloat
+
+    var body: some View {
+        let arc = Circle().trim(from: 0.06, to: 0.2)
+        let off = size * 0.025
+        ZStack {
+            arc.stroke(Color.red, style: StrokeStyle(lineWidth: size * 0.05, lineCap: .round)).offset(x: -off)
+            arc.stroke(Color.green, style: StrokeStyle(lineWidth: size * 0.05, lineCap: .round))
+            arc.stroke(Color.blue, style: StrokeStyle(lineWidth: size * 0.05, lineCap: .round)).offset(x: off)
+        }
+        .padding(size * 0.14)
+        .rotationEffect(.radians(angle * 0.6 + .pi))
+        .blur(radius: size * 0.02)
+        .blendMode(.plusLighter)
+        .opacity(0.75)
+    }
+}
+
+/// Prismatic sparks flying out of the lens and fading (`k` 0 → 1).
+private struct Sparks: View {
+    let k: Double
+
+    var body: some View {
+        let e = 1 - pow(1 - k, 3)
+        ZStack {
+            ForEach(0..<36, id: \.self) { i in
+                let a = Double(i) * 2.399963 // the golden angle: spread evenly, never in rows
+                let dist = (90 + Double((i * 37) % 120)) * e
+                let hue = Double(i) / 36
+                Circle()
+                    .fill(Color(hue: hue, saturation: 0.75, brightness: 1))
+                    .frame(width: 3 + CGFloat(i % 4), height: 3 + CGFloat(i % 4))
+                    .blur(radius: 0.6)
+                    .shadow(color: Color(hue: hue, saturation: 0.9, brightness: 1), radius: 4)
+                    .offset(x: CGFloat(cos(a) * dist), y: CGFloat(sin(a) * dist))
+                    .opacity((1 - k) * (i % 3 == 0 ? 1 : 0.7))
+            }
+        }
+        .blendMode(.plusLighter)
     }
 }
 
