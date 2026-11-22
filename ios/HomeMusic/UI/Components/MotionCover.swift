@@ -31,8 +31,8 @@ enum MotionCovers {
     }
 }
 
-/// The player's cover: the still image, Apple Music's animated cover over it when the album has one, else a slow
-/// generated drift with a soft light passing over it. A faint button in the corner turns all of it on and off.
+/// The player's cover: the still image, with Apple Music's animated cover over it when the album has one (nothing
+/// moves otherwise). A faint button in the corner turns animated covers on and off.
 struct LiveCover: View {
     let track: QueueTrack
     let size: CGFloat
@@ -41,32 +41,13 @@ struct LiveCover: View {
     @Environment(AppTheme.self) private var theme
     @State private var url: URL?
     @State private var ready = false
-    @State private var looked = false
 
     private var live: Bool { theme.motionCovers }
-    private var drift: Bool { live && looked && url == nil && playing }
 
     var body: some View {
         ZStack {
-            TimelineView(.animation(minimumInterval: 1 / 30, paused: !drift)) { tl in
-                let t = tl.date.timeIntervalSinceReferenceDate
-                let z = drift ? 1.07 + 0.03 * sin(t / 7) : 1
-                Cover(url: HiRes.cover(track.coverUrl ?? track.coverSmallUrl, size: 900), size: size, corner: 0,
-                      fallback: track.coverUrl ?? track.coverSmallUrl)
-                    .scaleEffect(z)
-                    .offset(x: drift ? 7 * sin(t / 9) : 0, y: drift ? 6 * cos(t / 11) : 0)
-                    .overlay {
-                        if drift {
-                            // a wide soft glare drifting across
-                            LinearGradient(colors: [.clear, .white.opacity(0.16), .clear], startPoint: .leading, endPoint: .trailing)
-                                .frame(width: size * 0.7)
-                                .rotationEffect(.degrees(20))
-                                .offset(x: size * 0.9 * sin(t / 6))
-                                .blendMode(.plusLighter)
-                        }
-                    }
-                    .animation(.easeInOut(duration: 1.2), value: drift)
-            }
+            Cover(url: HiRes.cover(track.coverUrl ?? track.coverSmallUrl, size: 900), size: size, corner: 0,
+                  fallback: track.coverUrl ?? track.coverSmallUrl)
             if let url, live {
                 LoopingVideo(url: url, playing: playing, ready: $ready)
                     .opacity(ready ? 1 : 0)
@@ -76,6 +57,7 @@ struct LiveCover: View {
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
+            if url != nil {
             Button {
                 withAnimation(.smooth) { theme.motionCovers.toggle() }
             } label: {
@@ -91,16 +73,17 @@ struct LiveCover: View {
             .opacity(0.45)
             .padding(10)
             .accessibilityLabel(live ? "Выключить живые обложки" : "Включить живые обложки")
+            .transition(.opacity)
+            }
         }
-        .task(id: MotionCovers.key(track) + (live ? "1" : "0")) {
+        .animation(.smooth, value: url != nil)
+        .onChange(of: live) { ready = false }
+        .task(id: MotionCovers.key(track)) {
             ready = false
             url = nil
-            looked = false
-            guard live else { return }
             let found = await MotionCovers.url(for: track)
             guard !Task.isCancelled else { return }
             url = found
-            looked = true
         }
     }
 }

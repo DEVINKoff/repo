@@ -173,54 +173,67 @@ struct NothingPlaying: View {
     }
 }
 
-/// The opening: the app's mark draws in on the accent's glow, the two waves ripple out, then everything lifts away
-/// into the app.
+/// The opening: one drop of liquid glass over a faint wash of the accent splits into three, flows back into one and
+/// opens out into the app. No logo, no words.
 struct LaunchSplash: View {
     let done: () -> Void
-    @State private var step = 0
+    @State private var phase = 0 // 0 — a drop; 1 — three; 2 — one again; 3 — opening out
+
+    private let orbs: [(size: CGFloat, offset: CGSize)] = [
+        (96, CGSize(width: -58, height: 34)), (70, CGSize(width: 62, height: 46)), (54, CGSize(width: 6, height: -70)),
+    ]
 
     var body: some View {
         ZStack {
             Color(.systemBackground).ignoresSafeArea()
-            RadialGradient(colors: [Theme.accent.opacity(step >= 1 ? 0.35 : 0), .clear], center: .center, startRadius: 0,
-                           endRadius: step >= 1 ? 420 : 60)
-                .ignoresSafeArea()
-            ForEach(0..<2, id: \.self) { i in
-                Circle().strokeBorder(Theme.accent.opacity(step >= 2 ? 0 : 0.5), lineWidth: 2)
-                    .frame(width: 110, height: 110)
-                    .scaleEffect(step >= 2 ? 3.2 + Double(i) : 1)
-                    .animation(.easeOut(duration: 1.0).delay(Double(i) * 0.12), value: step)
-            }
-            VStack(spacing: 18) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                        .fill(Theme.accent.gradient)
-                        .frame(width: 110, height: 110)
-                        .shadow(color: Theme.accent.opacity(0.5), radius: step >= 1 ? 30 : 0, y: 10)
-                    Image(systemName: "waveform")
-                        .font(.system(size: 50, weight: .bold))
-                        .foregroundStyle(Theme.onAccent)
-                        .symbolEffect(.variableColor.iterative, options: .speed(1.6), isActive: step == 1)
-                }
-                .scaleEffect(step == 0 ? 0.6 : step >= 3 ? 1.5 : 1)
-                .rotationEffect(.degrees(step == 0 ? -12 : 0))
-                Text("HomeMusic")
-                    .font(.display(26, .heavy))
-                    .opacity(step >= 1 && step < 3 ? 1 : 0)
-                    .offset(y: step >= 1 ? 0 : 14)
-                    .blur(radius: step >= 1 && step < 3 ? 0 : 8)
-            }
-            .opacity(step >= 3 ? 0 : 1)
-            .blur(radius: step >= 3 ? 12 : 0)
+            // something for the glass to bend: a soft, slowly widening wash of the accent
+            Circle()
+                .fill(Theme.accent.gradient)
+                .frame(width: 220, height: 220)
+                .blur(radius: 60)
+                .scaleEffect(phase == 0 ? 0.5 : phase == 3 ? 2.6 : 1)
+                .opacity(phase == 0 ? 0.2 : phase == 3 ? 0 : 0.55)
+            glass
+                .scaleEffect(phase == 3 ? 9 : 1)
+                .opacity(phase == 3 ? 0 : 1)
         }
+        .allowsHitTesting(phase < 3)
         .task {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.62)) { step = 1 }
-            try? await Task.sleep(for: .milliseconds(550))
-            step = 2
-            try? await Task.sleep(for: .milliseconds(450))
-            withAnimation(.easeIn(duration: 0.35)) { step = 3 }
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(120))
+            withAnimation(.spring(response: 0.7, dampingFraction: 0.62)) { phase = 1 }
+            try? await Task.sleep(for: .milliseconds(650))
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.7)) { phase = 2 }
+            try? await Task.sleep(for: .milliseconds(480))
+            withAnimation(.easeIn(duration: 0.45)) { phase = 3 }
+            try? await Task.sleep(for: .milliseconds(380))
             done()
+        }
+    }
+
+    private func orb(_ i: Int) -> some View {
+        let o = orbs[i]
+        let apart = phase == 1
+        return Color.clear
+            .frame(width: apart ? o.size : 110, height: apart ? o.size : 110)
+            .offset(apart ? o.offset : .zero)
+    }
+
+    @ViewBuilder private var glass: some View {
+        if #available(iOS 26.0, *) {
+            // drops in one container melt into each other as they meet
+            GlassEffectContainer(spacing: 44) {
+                ZStack {
+                    ForEach(0..<orbs.count, id: \.self) { i in
+                        orb(i).glassEffect(.regular.tint(Theme.accent.opacity(0.12)), in: Circle())
+                    }
+                }
+            }
+        } else {
+            ZStack {
+                ForEach(0..<orbs.count, id: \.self) { i in
+                    orb(i).background(.ultraThinMaterial, in: Circle())
+                }
+            }
         }
     }
 }

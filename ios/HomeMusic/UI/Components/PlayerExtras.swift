@@ -217,9 +217,9 @@ struct TrackInfoSection: View {
 
 // MARK: - Cinematic mode (the phone sideways)
 
-/// Full-bleed: the cover's colours fill the screen, the cover (animated where it can be) on the left, the title and
-/// the sung line on the right. Every size follows the screen's height. The controls float over the bottom, fade
-/// away after a few seconds and come back with a tap. The screen stays on.
+/// Full-bleed: the cover's colours fill the whole screen, the cover (animated when Apple has it) on the left, the title
+/// and the sung line on the right, a hairline of progress and three bare controls under them. Every size follows the
+/// screen's height. The controls fade after a few seconds (a tap brings them back); the screen stays on.
 struct CinematicPlayer: View {
     let track: QueueTrack
     let size: CGSize
@@ -233,81 +233,56 @@ struct CinematicPlayer: View {
         GeometryReader { g in
             let h = g.size.height
             let w = g.size.width
-            let art = min(h * 0.66, w * 0.36)
-            ZStack {
-                CinematicBackdrop(url: track.coverUrl ?? track.coverSmallUrl)
-                HStack(alignment: .center, spacing: w * 0.05) {
-                    LiveCover(track: track, size: art, corner: art * 0.08, playing: player.isPlaying)
-                        .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
-                        .scaleEffect(player.isPlaying ? 1 : 0.94)
-                        .animation(.spring(response: 0.6, dampingFraction: 0.7), value: player.isPlaying)
-                        .id(track.uid)
-                        .transition(.scale(scale: 0.9).combined(with: .blurFade))
-                    VStack(alignment: .leading, spacing: h * 0.03) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(track.title)
-                                .font(.system(size: min(26, h * 0.07), weight: .heavy).width(.expanded))
-                                .lineLimit(1).minimumScaleFactor(0.6)
-                            Text(track.artist)
-                                .font(.system(size: min(17, h * 0.045), weight: .medium))
-                                .opacity(0.7).lineLimit(1)
-                        }
-                        .id(track.uid)
-                        .transition(.blurFade)
-                        CinematicLyric(size: min(26, h * 0.068))
-                            .frame(maxWidth: .infinity, maxHeight: h * 0.42, alignment: .topLeading)
-                            .clipped()
+            let art = min(h * 0.8, w * 0.4)
+            HStack(alignment: .center, spacing: w * 0.055) {
+                LiveCover(track: track, size: art, corner: art * 0.07, playing: player.isPlaying)
+                    .shadow(color: .black.opacity(0.45), radius: 26, y: 14)
+                    .scaleEffect(player.isPlaying ? 1 : 0.95)
+                    .animation(.spring(response: 0.6, dampingFraction: 0.75), value: player.isPlaying)
+                    .id(track.uid)
+                    .transition(.blurFade)
+                VStack(alignment: .leading, spacing: 0) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(track.title)
+                            .font(.system(size: min(24, h * 0.065), weight: .bold).width(.expanded))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                        Text(track.artist)
+                            .font(.system(size: min(16, h * 0.042), weight: .medium))
+                            .opacity(0.6).lineLimit(1)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .id(track.uid)
+                    .transition(.blurFade)
+                    CinematicLyric(size: min(22, h * 0.058))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    CinematicControls(poke: poke)
+                        .opacity(controls ? 1 : 0)
+                        .allowsHitTesting(controls)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.bottom, controls ? h * 0.2 : 0)
-                .animation(.spring(response: 0.55, dampingFraction: 0.85), value: track.uid)
-
-                VStack {
-                    HStack {
-                        Spacer()
-                        Button(action: rotateBack) {
-                            Image(systemName: "arrow.down.right.and.arrow.up.left").font(.headline).frame(width: 38, height: 38)
-                        }
-                        .glassCircle()
-                        .buttonStyle(.plain)
-                    }
-                    Spacer()
-                    HStack(spacing: 22) {
-                        Button { player.prev(); poke() } label: { Image(systemName: "backward.fill").font(.title3) }
-                        Button { player.toggle(); poke() } label: {
-                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 22, weight: .semibold))
-                                .contentTransition(.symbolEffect(.replace))
-                                .frame(width: 46, height: 46)
-                        }
-                        .glassCircle()
-                        Button { player.next(); poke() } label: { Image(systemName: "forward.fill").font(.title3) }
-                        Scrubber()
-                            .frame(maxWidth: .infinity)
-                            .simultaneousGesture(TapGesture().onEnded { poke() })
-                    }
-                    .buttonStyle(.pressable)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 8)
-                    .glassCapsule()
-                }
-                .opacity(controls ? 1 : 0)
-                .offset(y: controls ? 0 : 16)
-                .allowsHitTesting(controls)
+                .frame(maxWidth: .infinity, maxHeight: art, alignment: .leading)
             }
             .frame(width: w, height: h)
+            .animation(.smooth(duration: 0.5), value: track.uid)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .background { CinematicBackdrop(url: track.coverUrl ?? track.coverSmallUrl) }
+        .overlay(alignment: .topTrailing) {
+            Button(action: rotateBack) {
+                Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.pressable)
+            .opacity(controls ? 0.7 : 0)
+            .allowsHitTesting(controls)
+        }
         .foregroundStyle(.white)
         .environment(\.colorScheme, .dark)
         .contentShape(Rectangle())
         .onTapGesture {
             if controls { withAnimation(.smooth) { controls = false } } else { poke() }
         }
-        .animation(.smooth(duration: 0.4), value: controls)
+        .animation(.smooth(duration: 0.45), value: controls)
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             lyrics.load(for: player.track)
@@ -333,36 +308,104 @@ struct CinematicPlayer: View {
     }
 }
 
-/// The cover blown up and blurred behind everything, darkened, filling the whole screen.
+/// A hairline of progress (drag along it to seek) with the times at its ends, and ⏮ ⏯ ⏭ as plain icons.
+private struct CinematicControls: View {
+    let poke: () -> Void
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Hairline(poke: poke)
+            HStack(spacing: 34) {
+                Button { player.prev(); poke() } label: { Image(systemName: "backward.fill") }
+                Button { player.toggle(); poke() } label: {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 26, weight: .semibold))
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 30)
+                }
+                Button { player.next(); poke() } label: { Image(systemName: "forward.fill") }
+            }
+            .font(.system(size: 19, weight: .semibold))
+            .buttonStyle(.pressable)
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+private struct Hairline: View {
+    let poke: () -> Void
+    @Environment(Player.self) private var player
+    @State private var drag: Double?
+
+    var body: some View {
+        let total = max(player.duration, 1)
+        let shown = min(drag ?? player.position, total)
+        HStack(spacing: 10) {
+            Text(Format.time(shown)).frame(minWidth: 34, alignment: .leading)
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.22))
+                    Capsule().fill(.white).frame(width: g.size.width * shown / total)
+                }
+                .frame(height: drag == nil ? 3 : 6)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        poke()
+                        player.scrubbing = true
+                        drag = max(0, min(total, Double(v.location.x / g.size.width) * total))
+                    }
+                    .onEnded { _ in
+                        player.scrubbing = false
+                        if let d = drag { player.seek(d) }
+                        drag = nil
+                    })
+                .animation(.smooth(duration: 0.2), value: drag == nil)
+            }
+            .frame(height: 18)
+            Text("-" + Format.time(max(0, player.duration - shown))).frame(minWidth: 38, alignment: .trailing)
+        }
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.white.opacity(0.6))
+    }
+}
+
+/// The cover blown up and blurred behind everything, darkened, filling the whole screen edge to edge.
 private struct CinematicBackdrop: View {
     let url: String?
     @State private var image: UIImage?
 
     var body: some View {
-        Color.black
-            .overlay {
+        GeometryReader { g in
+            ZStack {
+                Color(red: 0.04, green: 0.04, blue: 0.05)
                 if let image {
                     Image(uiImage: image).resizable().scaledToFill()
-                        .blur(radius: 50, opaque: true)
-                        .saturation(1.4)
-                        .scaleEffect(1.25)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .blur(radius: 60, opaque: true)
+                        .saturation(1.5)
+                        .opacity(0.75)
                         .transition(.opacity)
                 }
+                LinearGradient(colors: [.black.opacity(0.15), .black.opacity(0.55)], startPoint: .top, endPoint: .bottom)
             }
-            .overlay(Color.black.opacity(0.45))
+            .frame(width: g.size.width, height: g.size.height)
             .clipped()
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-            .task(id: url) {
-                guard let u = HubClient.shared.absolute(url) else { return }
-                if let img = await ImageCache.shared.image(u, px: 256) { withAnimation(.easeInOut(duration: 0.8)) { image = img } }
-            }
+        }
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
+        .task(id: url) {
+            guard let u = HubClient.shared.absolute(url) else { return }
+            if let img = await ImageCache.shared.image(u, px: 256) { withAnimation(.easeInOut(duration: 0.8)) { image = img } }
+        }
     }
 }
 
-/// The sung line, with the next one dimmed below it; lines rise in and out.
+/// The sung line, word by word, with the next one dimmed below it; lines cross-fade in place.
 struct CinematicLyric: View {
-    var size: CGFloat = 26
+    var size: CGFloat = 22
     @Environment(Player.self) private var player
     @Environment(Lyrics.self) private var lyrics
 
@@ -371,29 +414,30 @@ struct CinematicLyric: View {
            let id = Lyrics.current(lines, at: player.position),
            let i = lines.firstIndex(where: { $0.id == id }) {
             let line = lines[i]
-            VStack(alignment: .leading, spacing: size * 0.4) {
-                Group {
-                    if line.words.isEmpty {
-                        Text(line.text.isEmpty ? "♪" : line.text).font(.system(size: size, weight: .heavy))
-                    } else {
-                        SungLine(line: line, size: size)
+            ZStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: size * 0.45) {
+                    Group {
+                        if line.words.isEmpty {
+                            Text(line.text.isEmpty ? "♪" : line.text).font(.system(size: size, weight: .heavy))
+                        } else {
+                            SungLine(line: line, size: size)
+                        }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    if i + 1 < lines.count, !lines[i + 1].text.isEmpty {
+                        Text(lines[i + 1].text)
+                            .font(.system(size: size * 0.7, weight: .bold))
+                            .opacity(0.35)
+                            .lineLimit(2)
                     }
                 }
                 .id(line.id)
-                .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade),
-                                        removal: .move(edge: .top).combined(with: .blurFade)))
-                if i + 1 < lines.count {
-                    Text(lines[i + 1].text).font(.system(size: size * 0.62, weight: .bold)).opacity(0.35).lineLimit(1)
-                        .id("next-\(line.id)")
-                        .transition(.blurFade)
-                }
+                .transition(.blurFade)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .animation(.spring(response: 0.6, dampingFraction: 0.86), value: line.id)
-        } else if case .plain = lyrics.state {
-            Text("Текст без синхронизации").font(.footnote).opacity(0.4)
+            .animation(.smooth(duration: 0.45), value: line.id)
         } else {
-            Color.clear.frame(height: 1)
+            Color.clear
         }
     }
 }
