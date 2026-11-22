@@ -53,6 +53,10 @@ targets:
         NSCameraUsageDescription: "Чтобы сфотографировать список песен для ассистента."
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # ProMotion: animations and lyrics at up to 120 Hz on iPhones that have it
+        CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown

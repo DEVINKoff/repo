@@ -261,7 +261,7 @@ struct LyricsView: View {
                 if old == nil {
                     proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3))
                 } else {
-                    withAnimation(.spring(response: 0.65, dampingFraction: 0.9)) { proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3)) }
+                    withAnimation(.smooth(duration: 0.75)) { proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3)) }
                 }
             }
             .onChange(of: lyrics.state) { current = nil }
@@ -316,7 +316,7 @@ struct LyricLine: View, Equatable {
         .scaleEffect(isNow ? 1 : 0.95, anchor: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: isNow)
+        .animation(.smooth(duration: 0.6), value: isNow)
     }
 }
 
@@ -327,16 +327,17 @@ enum LyricsStyle {
 }
 
 /// The playing line: each word fills with light as it is sung, lifts a little and glows; sung words stay lit.
+/// Every effect eases over time (no step at a word's start or end), redrawn at the screen's rate (120 Hz on ProMotion).
 struct SungLine: View {
     let line: Lyrics.Line
     @Environment(Player.self) private var player
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 60, paused: !player.isPlaying)) { _ in
+        TimelineView(.animation(minimumInterval: 1 / 120, paused: !player.isPlaying)) { _ in
             let t = player.liveTime
             FlowLayout(spacing: LyricsStyle.wordSpacing, lineSpacing: LyricsStyle.lineSpacing) {
                 ForEach(Array(line.words.enumerated()), id: \.offset) { _, w in
-                    SungWord(word: w.text, progress: w.end > w.start ? min(1, max(0, (t - w.start) / (w.end - w.start))) : (t >= w.start ? 1 : 0))
+                    SungWord(word: w.text, time: t, start: w.start, end: w.end)
                 }
             }
         }
@@ -345,37 +346,37 @@ struct SungLine: View {
 
 struct SungWord: View {
     let word: String
-    /// 0 — not reached, 1 — sung
-    let progress: Double
+    let time: Double
+    let start: Double
+    let end: Double
+
+    private static func clamp(_ x: Double) -> Double { min(1, max(0, x)) }
+    private static func ease(_ x: Double) -> Double { let c = clamp(x); return c * c * (3 - 2 * c) }
 
     var body: some View {
-        let active = progress > 0 && progress < 1
+        let d = max(0.12, end - start)
+        // the fill: eased through the word; its soft edge stays behind the sung part
+        let fill = Self.ease((time - start) / d) * 1.35
+        // the lift and the glow: rise just before the word, settle slowly after it
+        let env = Self.ease((time - start + 0.1) / 0.28) * Self.ease(1 - (time - end) / 0.55)
         Text(word)
             .font(LyricsStyle.font)
             .foregroundStyle(Color.primary.opacity(0.32))
             .overlay(alignment: .leading) {
-                // the light sweeps through the word with a soft edge
                 Text(word)
                     .font(LyricsStyle.font)
                     .foregroundStyle(.primary)
                     .mask(alignment: .leading) {
-                        GeometryReader { g in
-                            if progress >= 1 {
-                                Rectangle()
-                            } else if progress > 0 {
-                                // a soft edge that never runs ahead of the sung part
-                                LinearGradient(stops: [.init(color: .black, location: 0),
-                                                       .init(color: .black, location: max(0, progress - 0.12)),
-                                                       .init(color: .clear, location: progress)],
-                                               startPoint: .leading, endPoint: .trailing)
-                                    .frame(width: g.size.width)
-                            }
-                        }
+                        LinearGradient(stops: [.init(color: .black, location: 0),
+                                               .init(color: .black, location: max(0, fill - 0.35)),
+                                               .init(color: .clear, location: max(0.001, fill))],
+                                       startPoint: .leading, endPoint: .trailing)
                     }
+                    .opacity(fill > 0 ? 1 : 0)
             }
-            .shadow(color: Color.primary.opacity(active ? 0.4 : 0), radius: active ? 10 : 0)
-            .offset(y: active ? -2.5 * sin(progress * .pi) : 0)
-            .scaleEffect(active ? 1 + 0.04 * sin(progress * .pi) : 1, anchor: .bottom)
+            .shadow(color: Color.primary.opacity(0.35 * env), radius: 9 * env)
+            .offset(y: -2.5 * env)
+            .scaleEffect(1 + 0.035 * env, anchor: .bottom)
     }
 }
 

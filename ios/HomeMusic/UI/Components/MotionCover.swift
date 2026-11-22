@@ -9,29 +9,31 @@ enum MotionCovers {
     private static var known: [String: URL?] = [:]
     private static var pending: [String: Task<URL?, Never>] = [:]
 
-    static func key(_ t: QueueTrack) -> String? {
-        guard let album = t.album, !album.isEmpty else { return nil }
-        return Norm.key(t.artist) + "|" + Norm.key(album)
+    static func key(_ t: QueueTrack) -> String {
+        Norm.key(t.artist) + "|" + (t.album.map { Norm.key($0) }.flatMap { $0.isEmpty ? nil : $0 } ?? "t:" + Norm.key(t.title))
     }
 
     static func url(for t: QueueTrack) async -> URL? {
-        guard let key = key(t), let album = t.album else { return nil }
+        let key = key(t)
+        let album = t.album ?? ""
         if let hit = known[key] { return hit }
         if let task = pending[key] { return await task.value }
         let ref = t.albumRef?.hasPrefix("am:") == true ? t.albumRef : nil
         let task = Task<URL?, Never> {
-            let out = try? await HubClient.shared.motionCover(artist: t.artist, album: album, ref: ref)
+            let out = try? await HubClient.shared.motionCover(artist: t.artist, album: album, track: t.title, ref: ref)
             return out?.url.flatMap(URL.init(string:))
         }
         pending[key] = task
         let url = await task.value
         pending[key] = nil
-        known[key] = url
+        if url != nil || !Task.isCancelled { known[key] = url }
         return url
     }
 }
 
-struct MotionCover: View {
+/// The player's cover: the still image, Apple Music's animated cover over it when the album has one, else a slow
+/// generated drift with a soft light passing over it. A faint button in the corner turns all of it on and off.
+struct LiveCover: View {
     let track: QueueTrack
     let size: CGFloat
     let corner: CGFloat
@@ -39,23 +41,66 @@ struct MotionCover: View {
     @Environment(AppTheme.self) private var theme
     @State private var url: URL?
     @State private var ready = false
+    @State private var looked = false
+
+    private var live: Bool { theme.motionCovers }
+    private var drift: Bool { live && looked && url == nil && playing }
 
     var body: some View {
         ZStack {
-            if let url, theme.motionCovers {
+            TimelineView(.animation(minimumInterval: 1 / 30, paused: !drift)) { tl in
+                let t = tl.date.timeIntervalSinceReferenceDate
+                let z = drift ? 1.07 + 0.03 * sin(t / 7) : 1
+                Cover(url: HiRes.cover(track.coverUrl ?? track.coverSmallUrl, size: 900), size: size, corner: 0,
+                      fallback: track.coverUrl ?? track.coverSmallUrl)
+                    .scaleEffect(z)
+                    .offset(x: drift ? 7 * sin(t / 9) : 0, y: drift ? 6 * cos(t / 11) : 0)
+                    .overlay {
+                        if drift {
+                            // a wide soft glare drifting across
+                            LinearGradient(colors: [.clear, .white.opacity(0.16), .clear], startPoint: .leading, endPoint: .trailing)
+                                .frame(width: size * 0.7)
+                                .rotationEffect(.degrees(20))
+                                .offset(x: size * 0.9 * sin(t / 6))
+                                .blendMode(.plusLighter)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 1.2), value: drift)
+            }
+            if let url, live {
                 LoopingVideo(url: url, playing: playing, ready: $ready)
-                    .frame(width: size, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
                     .opacity(ready ? 1 : 0)
                     .animation(.easeInOut(duration: 0.6), value: ready)
             }
         }
-        .allowsHitTesting(false)
-        .task(id: MotionCovers.key(track)) {
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                withAnimation(.smooth) { theme.motionCovers.toggle() }
+            } label: {
+                Image(systemName: live ? "livephoto" : "livephoto.slash")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .symbolEffect(.pulse, options: .repeating, isActive: live && ready && playing)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 34, height: 34)
+                    .background(.black.opacity(0.18), in: Circle())
+            }
+            .buttonStyle(.pressable)
+            .opacity(0.45)
+            .padding(10)
+            .accessibilityLabel(live ? "Выключить живые обложки" : "Включить живые обложки")
+        }
+        .task(id: MotionCovers.key(track) + (live ? "1" : "0")) {
             ready = false
             url = nil
-            guard theme.motionCovers else { return }
-            url = await MotionCovers.url(for: track)
+            looked = false
+            guard live else { return }
+            let found = await MotionCovers.url(for: track)
+            guard !Task.isCancelled else { return }
+            url = found
+            looked = true
         }
     }
 }

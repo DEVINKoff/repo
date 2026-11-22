@@ -20,64 +20,103 @@ struct PlayerView: View {
             ZStack {
                 PlayerBackground(url: player.track?.coverUrl ?? player.track?.coverSmallUrl)
                 if let t = player.track {
-                    VStack(spacing: 0) {
-                        header
-                        ZStack {
-                            switch mode {
-                            case .cover:
-                                ZStack {
-                                    Cover(url: HiRes.cover(t.coverUrl ?? t.coverSmallUrl, size: 900), size: art, corner: 26,
-                                          fallback: t.coverUrl ?? t.coverSmallUrl)
-                                    MotionCover(track: t, size: art, corner: 26, playing: player.isPlaying)
+                    if geo.size.width > geo.size.height * 1.15 {
+                        // the phone turned sideways: the cinematic mode
+                        CinematicPlayer(track: t, size: geo.size, rotateBack: { rotate(landscape: false) })
+                            .transition(.blurFade)
+                    } else {
+                        ScrollView(.vertical) {
+                            VStack(spacing: 0) {
+                                page(t, art: art).frame(height: geo.size.height)
+                                // scroll down: more about the track (only under the cover: the lyrics and the queue
+                                // scroll themselves, and with nothing below the page doesn't move)
+                                if mode == .cover {
+                                    TrackInfoSection(track: t, openArtist: { openArtist(t) }, open: open)
+                                        .padding(.horizontal, 20)
+                                        .padding(.bottom, 40)
+                                        .transition(.opacity)
                                 }
-                                .shadow(color: .black.opacity(0.5), radius: player.isPlaying ? 34 : 18, y: player.isPlaying ? 20 : 10)
-                                .scaleEffect(player.isPlaying ? 1 : 0.88)
-                                .animation(.spring(response: 0.55, dampingFraction: 0.68), value: player.isPlaying)
-                                .id(t.uid)
-                                .transition(.asymmetric(insertion: .scale(scale: 0.8).combined(with: .blurFade),
-                                                        removal: .scale(scale: 1.08).combined(with: .blurFade)))
-                            case .lyrics:
-                                LyricsView().padding(.horizontal, 4)
-                                    .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade), removal: .blurFade))
-                            case .queue:
-                                QueueView().transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade), removal: .blurFade))
                             }
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: t.uid)
-                        if mode == .lyrics || mode == .queue { compactTitle(t).padding(.bottom, 10) }
-                        VStack(spacing: 0) {
-                            if mode == .cover { titleRow(t).padding(.bottom, 6) }
-                            infoRow(t).frame(height: 30)
-                            Scrubber()
-                                .padding(.top, 4)
-                            transport.padding(.top, 14)
-                            modesBar.padding(.top, 22).padding(.bottom, 10)
-                        }
+                        .scrollIndicators(.hidden)
+                        .scrollBounceBehavior(.basedOnSize)
+                        .transition(.blurFade)
                     }
-                    .padding(.horizontal, 24)
-                    .foregroundStyle(.primary)
-                    .animation(.spring(response: 0.45, dampingFraction: 0.85), value: mode)
                 } else {
                     ContentUnavailableView("Ничего не играет", systemImage: "music.note")
                 }
+                if !artistChoice.isEmpty {
+                    ArtistPicker(artists: artistChoice, pick: { a in
+                        artistChoice = []
+                        open(a)
+                    }, cancel: { artistChoice = [] })
+                    .transition(.opacity)
+                    .zIndex(2)
+                }
             }
+            .animation(.spring(response: 0.4, dampingFraction: 0.86), value: artistChoice.isEmpty)
+            .animation(.smooth(duration: 0.4), value: geo.size.width > geo.size.height * 1.15)
         }
         .presentationBackground(Color(.systemBackground))
-        .confirmationDialog("Перейти к исполнителю", isPresented: Binding(get: { !artistChoice.isEmpty }, set: { if !$0 { artistChoice = [] } }),
-                            titleVisibility: .visible) {
-            ForEach(artistChoice, id: \.name) { a in
-                Button(a.name) { open(a) }
-            }
-            Button("Отмена", role: .cancel) {}
-        }
         .presentationDragIndicator(.visible)
+    }
+
+    /// The first screen of the player (the rest is below it).
+    private func page(_ t: QueueTrack, art: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            header
+            ZStack {
+                switch mode {
+                case .cover:
+                    LiveCover(track: t, size: art, corner: 26, playing: player.isPlaying)
+                        .shadow(color: .black.opacity(0.5), radius: player.isPlaying ? 34 : 18, y: player.isPlaying ? 20 : 10)
+                        .scaleEffect(player.isPlaying ? 1 : 0.88)
+                        .animation(.spring(response: 0.55, dampingFraction: 0.68), value: player.isPlaying)
+                        .id(t.uid)
+                        .transition(.asymmetric(insertion: .scale(scale: 0.8).combined(with: .blurFade),
+                                                removal: .scale(scale: 1.08).combined(with: .blurFade)))
+                case .lyrics:
+                    LyricsView().padding(.horizontal, 4)
+                        .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade), removal: .blurFade))
+                case .queue:
+                    QueueView().transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .blurFade), removal: .blurFade))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.spring(response: 0.5, dampingFraction: 0.82), value: t.uid)
+            if mode == .lyrics || mode == .queue { compactTitle(t).padding(.bottom, 10) }
+            VStack(spacing: 0) {
+                if mode == .cover { titleRow(t).padding(.bottom, 6) }
+                infoRow(t).frame(height: 30)
+                Scrubber()
+                    .padding(.top, 4)
+                transport.padding(.top, 14)
+                modesBar.padding(.top, 22)
+                Image(systemName: "chevron.compact.down")
+                    .font(.system(size: 22, weight: .medium))
+                    .opacity(mode == .cover ? 0.25 : 0)
+                    .padding(.top, 6)
+                    .padding(.bottom, 2)
+            }
+        }
+        .padding(.horizontal, 24)
+        .foregroundStyle(.primary)
+        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: mode)
+    }
+
+    /// Turns the phone's UI sideways (the cinematic mode) or back.
+    private func rotate(landscape: Bool) {
+        AppDelegate.allowLandscape(true)
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: landscape ? .landscapeRight : .portrait)) { _ in }
+        scene.keyWindow?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
     }
 
     private var header: some View {
         HStack {
             Button { dismiss() } label: { Image(systemName: "chevron.down").font(.headline).frame(width: 40, height: 40) }
                 .glassCircle()
+            Color.clear.frame(width: 48, height: 40)
             Spacer()
             VStack(spacing: 2) {
                 Text(contextTitle.uppercased())
@@ -86,10 +125,17 @@ struct PlayerView: View {
             }
             Spacer()
             if let t = player.track {
-                Menu { TrackMenuItems(track: Track(t), context: player.context, inPlayer: true) } label: {
-                    Image(systemName: "ellipsis").font(.headline).frame(width: 40, height: 40)
+                HStack(spacing: 8) {
+                    Button { rotate(landscape: true) } label: {
+                        Image(systemName: "rectangle.landscape.rotate").font(.subheadline.weight(.semibold)).frame(width: 40, height: 40)
+                    }
+                    .glassCircle()
+                    .accessibilityLabel("Кинорежим")
+                    Menu { TrackMenuItems(track: Track(t), context: player.context, inPlayer: true) } label: {
+                        Image(systemName: "ellipsis").font(.headline).frame(width: 40, height: 40)
+                    }
+                    .glassCircle()
                 }
-                .glassCircle()
             } else {
                 Color.clear.frame(width: 40, height: 40)
             }
@@ -188,23 +234,8 @@ struct PlayerView: View {
         .buttonStyle(.pressable)
     }
 
-    /// Every artist of the track: its credits, else the names in its artist line («A, B feat. C»).
-    private func artistsOf(_ t: QueueTrack) -> [QueueTrack.Artist] {
-        if let list = t.artists?.filter({ !$0.name.isEmpty }), list.count > 1 { return list }
-        let names = t.artist
-            .replacingOccurrences(of: #"\s+(feat\.?|ft\.?|featuring|x|×|&|и)\s+"#, with: ",", options: [.regularExpression, .caseInsensitive])
-            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        var seen = Set<String>()
-        let unique = names.filter { seen.insert(Norm.key($0)).inserted }
-        if unique.count > 1 {
-            let known = t.artists ?? []
-            return unique.map { n in QueueTrack.Artist(name: n, ref: known.first { Norm.key($0.name) == Norm.key(n) }?.ref) }
-        }
-        return [QueueTrack.Artist(name: t.artists?.first?.name ?? t.artist, ref: t.artistRef ?? t.artists?.first?.ref)]
-    }
-
     private func openArtist(_ t: QueueTrack) {
-        let all = artistsOf(t)
+        let all = t.allArtists
         if all.count > 1 { artistChoice = all } else if let a = all.first { open(a) }
     }
 
