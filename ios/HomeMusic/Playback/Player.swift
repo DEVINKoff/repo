@@ -42,6 +42,12 @@ final class Player {
     /// A seek in progress (the slider is dragged): the shown position stays where the finger is.
     var scrubbing = false
 
+    /// The exact playback time right now (read from AVPlayer, not observed): the lyrics' word animation.
+    var liveTime: Double {
+        let t = avPlayer.currentTime().seconds
+        return t.isFinite && item != nil ? t : position
+    }
+
     var hasNext: Bool { index + 1 < queue.count }
     var hasPrev: Bool { index > 0 }
     var onWave: Bool { context.hasPrefix("wave:") }

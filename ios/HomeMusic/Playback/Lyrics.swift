@@ -9,7 +9,15 @@ import SwiftUI
 final class Lyrics {
     static let shared = Lyrics()
 
-    struct Line: Identifiable, Hashable { let id: Int; let time: Double; let text: String }
+    struct Word: Hashable { let text: String; let start: Double; let end: Double }
+    struct Line: Identifiable, Hashable {
+        let id: Int
+        let time: Double
+        let text: String
+        /// per word: from the enhanced LRC «<mm:ss.xx>» stamps, else spread over the line by length
+        var words: [Word] = []
+        var end: Double = 0
+    }
 
     enum State: Equatable {
         case idle, loading
@@ -109,7 +117,8 @@ final class Lyrics {
         return .missing
     }
 
-    /// LRC: «[mm:ss.xx] text» (several stamps on one line are several lines).
+    /// LRC: «[mm:ss.xx] text» (several stamps on one line are several lines); enhanced LRC «<mm:ss.xx>word» keeps
+    /// the time of every word.
     static func parse(_ lrc: String) -> [Line] {
         let stamp = try! NSRegularExpression(pattern: #"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]"#)
         var rows: [(Double, String)] = []
@@ -118,18 +127,64 @@ final class Lyrics {
             let matches = stamp.matches(in: raw, range: NSRange(location: 0, length: ns.length))
             guard let last = matches.last else { continue }
             let text = ns.substring(from: last.range.location + last.range.length).trimmingCharacters(in: .whitespaces)
-            for m in matches {
-                let min = Double(ns.substring(with: m.range(at: 1))) ?? 0
-                let sec = Double(ns.substring(with: m.range(at: 2))) ?? 0
-                var frac = 0.0
-                if m.range(at: 3).location != NSNotFound {
-                    let f = ns.substring(with: m.range(at: 3))
-                    frac = (Double(f) ?? 0) / pow(10, Double(f.count))
-                }
-                rows.append((min * 60 + sec + frac, text))
+            for m in matches { rows.append((seconds(ns, m), text)) }
+        }
+        rows.sort { $0.0 < $1.0 }
+        var lines: [Line] = []
+        for (i, row) in rows.enumerated() {
+            let next = i + 1 < rows.count ? rows[i + 1].0 : row.0 + 5
+            lines.append(timed(id: i, start: row.0, nextStart: next, raw: row.1))
+        }
+        return lines
+    }
+
+    private static func seconds(_ ns: NSString, _ m: NSTextCheckingResult) -> Double {
+        let min = Double(ns.substring(with: m.range(at: 1))) ?? 0
+        let sec = Double(ns.substring(with: m.range(at: 2))) ?? 0
+        var frac = 0.0
+        if m.range(at: 3).location != NSNotFound {
+            let f = ns.substring(with: m.range(at: 3))
+            frac = (Double(f) ?? 0) / pow(10, Double(f.count))
+        }
+        return min * 60 + sec + frac
+    }
+
+    /// The words of a line with their times. A long instrumental gap after a line is not sung: the line ends after
+    /// about the time its words take.
+    private static func timed(id: Int, start: Double, nextStart: Double, raw: String) -> Line {
+        let wordStamp = try! NSRegularExpression(pattern: #"<(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?>"#)
+        let ns = raw as NSString
+        let marks = wordStamp.matches(in: raw, range: NSRange(location: 0, length: ns.length))
+        let plain = wordStamp.stringByReplacingMatches(in: raw, range: NSRange(location: 0, length: ns.length), withTemplate: "")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+        let tokens = plain.split(separator: " ").map(String.init)
+        let gap = max(0.3, nextStart - start)
+        let natural = Double(tokens.reduce(0) { $0 + $1.count }) * 0.075 + Double(tokens.count) * 0.12
+        let end = start + min(gap, max(1.2, natural * 1.15))
+
+        var words: [Word] = []
+        if !marks.isEmpty {
+            // enhanced LRC: each stamp opens the text up to the next stamp
+            for (i, m) in marks.enumerated() {
+                let from = m.range.location + m.range.length
+                let to = i + 1 < marks.count ? marks[i + 1].range.location : ns.length
+                let piece = ns.substring(with: NSRange(location: from, length: max(0, to - from))).trimmingCharacters(in: .whitespaces)
+                let t0 = seconds(ns, m)
+                let t1 = i + 1 < marks.count ? seconds(ns, marks[i + 1]) : end
+                for w in piece.split(separator: " ") { words.append(Word(text: String(w), start: t0, end: max(t0 + 0.05, t1))) }
+            }
+        } else if !tokens.isEmpty {
+            // spread over the line by length (a vowel-heavy word takes longer)
+            let weights = tokens.map { Double(max(1, $0.count)) + 1.5 }
+            let total = weights.reduce(0, +)
+            var t = start
+            for (w, weight) in zip(tokens, weights) {
+                let d = (end - start) * weight / total
+                words.append(Word(text: w, start: t, end: t + d))
+                t += d
             }
         }
-        return rows.sorted { $0.0 < $1.0 }.enumerated().map { Line(id: $0.offset, time: $0.element.0, text: $0.element.1) }
+        return Line(id: id, time: start, text: plain, words: words, end: end)
     }
 }
 
@@ -176,32 +231,120 @@ struct LyricsView: View {
         let current = Lyrics.current(lines, at: player.position)
         return ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 18) {
+                LazyVStack(alignment: .leading, spacing: 22) {
                     Color.clear.frame(height: 40)
                     ForEach(lines) { line in
                         let isNow = line.id == current
                         let passed = (current ?? -1) > line.id
-                        Text(line.text.isEmpty ? "♪" : line.text)
-                            .font(.system(size: 26, weight: .bold))
-                            .foregroundStyle(.white.opacity(isNow ? 1 : passed ? 0.35 : 0.45))
-                            .blur(radius: isNow ? 0 : 0.6)
-                            .scaleEffect(isNow ? 1 : 0.96, anchor: .leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                            .onTapGesture { player.seek(max(0, line.time - 0.05)) }
-                            .id(line.id)
-                            .animation(.spring(response: 0.45, dampingFraction: 0.8), value: isNow)
+                        Group {
+                            if isNow && !line.words.isEmpty {
+                                SungLine(line: line)
+                            } else {
+                                Text(line.text.isEmpty ? "♪" : line.text)
+                                    .font(LyricsStyle.font)
+                                    .foregroundStyle(.white.opacity(passed ? 0.28 : 0.38))
+                                    .blur(radius: abs(line.id - (current ?? line.id)) > 2 ? 1.2 : 0.4)
+                            }
+                        }
+                        .scaleEffect(isNow ? 1 : 0.94, anchor: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { player.seek(max(0, line.time - 0.05)) }
+                        .id(line.id)
+                        .animation(.spring(response: 0.5, dampingFraction: 0.8), value: isNow)
                     }
-                    Color.clear.frame(height: 200)
+                    Color.clear.frame(height: 220)
                 }
             }
             .scrollIndicators(.hidden)
             .simultaneousGesture(DragGesture(minimumDistance: 6).onChanged { _ in userScrolledAt = Date() })
             .onChange(of: current) { _, now in
                 guard let now, Date().timeIntervalSince(userScrolledAt) > 3 else { return }
-                withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) { proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3)) }
+                withAnimation(.spring(response: 0.7, dampingFraction: 0.86)) { proxy.scrollTo(now, anchor: UnitPoint(x: 0, y: 0.3)) }
             }
             .onAppear { if let current { proxy.scrollTo(current, anchor: UnitPoint(x: 0, y: 0.3)) } }
+        }
+    }
+}
+
+enum LyricsStyle {
+    static let font = Font.system(size: 30, weight: .heavy)
+}
+
+/// The playing line: each word fills with light as it is sung, lifts a little and glows; sung words stay lit.
+struct SungLine: View {
+    let line: Lyrics.Line
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 60, paused: !player.isPlaying)) { _ in
+            let t = player.liveTime
+            FlowLayout(spacing: 9, lineSpacing: 4) {
+                ForEach(Array(line.words.enumerated()), id: \.offset) { _, w in
+                    SungWord(word: w.text, progress: w.end > w.start ? min(1, max(0, (t - w.start) / (w.end - w.start))) : (t >= w.start ? 1 : 0))
+                }
+            }
+        }
+    }
+}
+
+struct SungWord: View {
+    let word: String
+    /// 0 — not reached, 1 — sung
+    let progress: Double
+
+    var body: some View {
+        let active = progress > 0 && progress < 1
+        Text(word)
+            .font(LyricsStyle.font)
+            .foregroundStyle(.white.opacity(0.32))
+            .overlay(alignment: .leading) {
+                // the light sweeps through the word with a soft edge
+                Text(word)
+                    .font(LyricsStyle.font)
+                    .foregroundStyle(.white)
+                    .mask(alignment: .leading) {
+                        GeometryReader { g in
+                            LinearGradient(stops: [.init(color: .black, location: 0),
+                                                   .init(color: .black, location: max(0, progress - 0.08)),
+                                                   .init(color: .clear, location: min(1, progress + 0.08))],
+                                           startPoint: .leading, endPoint: .trailing)
+                                .frame(width: g.size.width * 1.2)
+                        }
+                    }
+            }
+            .shadow(color: .white.opacity(active ? 0.55 : 0), radius: active ? 10 : 0)
+            .offset(y: active ? -2.5 * sin(progress * .pi) : 0)
+            .scaleEffect(active ? 1 + 0.04 * sin(progress * .pi) : 1, anchor: .bottom)
+    }
+}
+
+/// Words wrapped onto lines like text, but each one its own view (so each can animate).
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, maxX: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0 && x + s.width > width { y += rowH + lineSpacing; x = 0; rowH = 0 }
+            x += s.width + spacing
+            maxX = max(maxX, x - spacing)
+            rowH = max(rowH, s.height)
+        }
+        return CGSize(width: proposal.width ?? maxX, height: y + rowH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowH: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + s.width > bounds.maxX { y += rowH + lineSpacing; x = bounds.minX; rowH = 0 }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            rowH = max(rowH, s.height)
         }
     }
 }
