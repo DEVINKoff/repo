@@ -13,8 +13,8 @@ struct PlayerView: View {
     /// closes the player (it slides away into the mini player)
     var close: () -> Void
 
-    init(close: @escaping () -> Void = { AppModel.shared.playerOpen = false }) {
-        self.close = close
+    init(close: (() -> Void)? = nil) {
+        self.close = close ?? { MainActor.assumeIsolated { AppModel.shared.playerOpen = false } }
     }
     @Environment(\.playerPull) private var pull
     @State private var mode: Mode = .cover
