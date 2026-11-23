@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// «Другой файл»: the files the sources have for the playing track (the Files search, by artist and title, editable);
-/// a tap makes that file the track's from now on — played, and taken by its download.
+/// «Другой файл»: the files the sources have for a track (the Files search, by artist and title, editable). For a
+/// streamed track a tap makes that file the track's from now on — played, and taken by its download; for a library
+/// song that file is downloaded and replaces the old one.
 struct PickFileSheet: View {
-    let track: QueueTrack
+    let target: PickTarget
     @Environment(Player.self) private var player
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -15,7 +16,7 @@ struct PickFileSheet: View {
         NavigationStack {
             List {
                 Section {
-                    if let info = player.info, player.track?.uid == track.uid {
+                    if target.libraryId == nil, let info = player.info, player.track?.ref == target.ref {
                         HStack(spacing: 10) {
                             Image(systemName: "waveform").foregroundStyle(Theme.accent)
                             VStack(alignment: .leading, spacing: 2) {
@@ -27,7 +28,9 @@ struct PickFileSheet: View {
                         }
                     }
                 } footer: {
-                    Text("Выберите правильный файл — он будет играть и скачиваться для этого трека вместо найденного автоматически.")
+                    Text(target.libraryId == nil
+                         ? "Выберите правильный файл — он будет играть и скачиваться для этого трека вместо найденного автоматически."
+                         : "Выбранный файл скачается в библиотеку и заменит нынешний, когда будет готов (старый уйдёт в корзину Хаба).")
                 }
                 if let error {
                     Text(error).foregroundStyle(.orange).font(.footnote)
@@ -52,7 +55,7 @@ struct PickFileSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Закрыть") { dismiss() } } }
             .task {
-                query = "\(track.artist) \(track.title)"
+                query = "\(target.artist) \(target.title)"
                 await search()
             }
         }
@@ -71,7 +74,7 @@ struct PickFileSheet: View {
                 HStack(spacing: 6) {
                     Tag(text: providerName(f.provider))
                     if let d = f.durationS {
-                        let off = track.durationS.map { abs($0 - d) > 6 } ?? false
+                        let off = target.durationS.map { abs($0 - d) > 6 } ?? false
                         Tag(text: Format.time(d), tint: off ? .orange : .secondary)
                     }
                     if let b = f.bitrateKbps { Tag(text: "\(Int(b)) кбит/с") }
@@ -104,10 +107,16 @@ struct PickFileSheet: View {
         Haptics.tap()
         Task {
             do {
-                _ = try await HubClient.shared.pickFile(ref: track.ref, fileRef: file)
-                Haptics.success()
-                Toasts.success("Файл заменён")
-                if player.track?.ref == track.ref { player.replayWithNewFile() }
+                if let lib = target.libraryId {
+                    _ = try await HubClient.shared.refreshSong(ndSongId: lib, candidate: f, star: target.star)
+                    Haptics.success()
+                    Toasts.success("Скачиваю выбранный файл — он заменит нынешний")
+                } else {
+                    _ = try await HubClient.shared.pickFile(ref: target.ref, fileRef: file)
+                    Haptics.success()
+                    Toasts.success("Файл заменён")
+                    if player.track?.ref == target.ref { player.replayWithNewFile() }
+                }
                 dismiss()
             } catch {
                 Haptics.error()

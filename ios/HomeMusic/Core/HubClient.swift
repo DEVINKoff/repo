@@ -292,6 +292,34 @@ extension HubClient {
 
     // listening before download
     func listen(_ ref: String) async throws -> ListenOut { try await request("GET", "/api/listen", query: ["ref": ref]) }
+    /// «Новое» in the library: songs the user added themselves, whose file is new.
+    func ndNew(limit: Int = 40) async throws -> [Track] {
+        try await request("GET", "/api/nd/new", query: ["limit": String(limit)])
+    }
+
+    /// The best cover the catalogs have, for the album of a library song.
+    func refreshSongCover(ndSongId: String) async throws {
+        _ = try await raw("POST", "/api/library/songs/\(enc(ndSongId))/cover", timeout: 40)
+    }
+
+    /// The user's own picture as the cover of the album of a library song.
+    func uploadSongCover(ndSongId: String, jpeg: Data) async throws {
+        let boundary = "hm-\(UUID().uuidString)"
+        var body = Data()
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"cover.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(jpeg)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        _ = try await raw("PUT", "/api/library/songs/\(enc(ndSongId))/cover", body: body,
+                          contentType: "multipart/form-data; boundary=\(boundary)", timeout: 60)
+    }
+
+    /// A library song downloaded again — `candidate` (a file the user picked) or picked anew — next to the old one,
+    /// which goes to the library's trash once the new one is in.
+    func refreshSong(ndSongId: String, candidate: Candidate?, star: Bool) async throws -> DownloadBatchOut {
+        struct In: Encodable { var candidate: Candidate?; var star: Bool }
+        return try await request("POST", "/api/library/songs/\(enc(ndSongId))/refresh", json: In(candidate: candidate, star: star))
+    }
+
     /// The user's own file for `ref` (a wrong automatic pick): played and downloaded from now on.
     func pickFile(ref: String, fileRef: String) async throws -> ListenOut {
         try await request("POST", "/api/listen/pick", json: ["ref": ref, "file_ref": fileRef])

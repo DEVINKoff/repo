@@ -1,4 +1,5 @@
 import AVFoundation
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -156,9 +157,20 @@ struct MainTabs: View {
         @Bindable var app = app
         @Bindable var picker = picker
         content
-            .sheet(isPresented: $app.playerOpen) {
-                PlayerView()
+            // the full player: the app's own layer over everything, rising from the bottom
+            .overlay {
+                if app.playerOpen { PlayerContainer() }
             }
+            .animation(.spring(response: 0.5, dampingFraction: 0.9), value: app.playerOpen)
+            // the library song actions of the track menus
+            .sheet(item: Binding(get: { app.playerOpen ? nil : LibraryActions.shared.picking }, set: { LibraryActions.shared.picking = $0 })) {
+                PickFileSheet(target: $0)
+            }
+            .photosPicker(isPresented: Binding(get: { !app.playerOpen && LibraryActions.shared.photoFor != nil },
+                                               set: { if !$0 && LibraryActions.shared.photoItem == nil { LibraryActions.shared.photoFor = nil } }),
+                          selection: Binding(get: { LibraryActions.shared.photoItem },
+                                             set: { LibraryActions.shared.photoItem = $0; LibraryActions.shared.uploadPhoto() }),
+                          matching: .images)
             .sheet(item: $picker.request) { PlaylistPickerSheet(request: $0) }
             .onChange(of: app.playerOpen) { _, open in AppDelegate.allowLandscape(open); Haptics.soft(open ? 0.7 : 0.4) }
             .onChange(of: router.tab) { Haptics.select() }

@@ -22,6 +22,9 @@ final class ImageCache: @unchecked Sendable {
 
     func cached(_ url: URL, px: Int? = nil) -> UIImage? { cache.object(forKey: key(url, px)) }
 
+    /// Forget every picture (a cover was replaced: the same address shows a new image).
+    func removeAll() { cache.removeAllObjects() }
+
     func image(_ url: URL, px: Int? = nil) async -> UIImage? {
         if let hit = cached(url, px: px) { return hit }
         guard let result = try? await HubClient.shared.session.data(from: url),

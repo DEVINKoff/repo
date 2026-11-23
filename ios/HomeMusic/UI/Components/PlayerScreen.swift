@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 /// The full player. Its own look rather than Apple Music's: a dark surface lit by the cover's colours from above,
@@ -9,11 +10,17 @@ struct PlayerView: View {
     @Environment(Player.self) private var player
     @Environment(Stars.self) private var stars
     @Environment(Wave.self) private var wave
-    @Environment(\.dismiss) private var dismiss
+    /// closes the player (it slides away into the mini player)
+    var close: () -> Void
+
+    init(close: @escaping () -> Void = { AppModel.shared.playerOpen = false }) {
+        self.close = close
+    }
+    @Environment(\.playerPull) private var pull
     @State private var mode: Mode = .cover
     @State private var isLandscape = false
     @Namespace private var hero
-    @State private var picking: QueueTrack?
+    @State private var picking: PickTarget?
     /// the artists of a track with several, to pick which one to open
     @State private var artistChoice: [QueueTrack.Artist] = []
 
@@ -61,21 +68,26 @@ struct PlayerView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.86), value: artistChoice.isEmpty)
             .animation(.smooth(duration: 0.4), value: geo.size.width > geo.size.height * 1.15)
         }
-        .presentationBackground(Color(.systemBackground))
-        .presentationDragIndicator(.visible)
-        .sheet(item: $picking) { PickFileSheet(track: $0) }
-        .interactiveDismissDisabled(isLandscape)
+        .sheet(item: Binding(get: { picking ?? LibraryActions.shared.picking },
+                             set: { picking = $0; LibraryActions.shared.picking = $0 })) { PickFileSheet(target: $0) }
+        .photosPicker(isPresented: Binding(get: { LibraryActions.shared.photoFor != nil },
+                                           set: { if !$0 && LibraryActions.shared.photoItem == nil { LibraryActions.shared.photoFor = nil } }),
+                      selection: Binding(get: { LibraryActions.shared.photoItem },
+                                         set: { LibraryActions.shared.photoItem = $0; LibraryActions.shared.uploadPhoto() }),
+                      matching: .images)
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height * 1.15 } action: { isLandscape = $0 }
     }
 
     /// The first screen of the player (the rest is below it).
     private func page(_ t: QueueTrack, art: CGFloat) -> some View {
         VStack(spacing: 0) {
-            header
+            header.playerHandle()
             ZStack {
                 switch mode {
                 case .cover:
                     LiveCover(track: t, size: art, corner: 26, playing: player.isPlaying)
+                        // pulled down: the cover shrinks toward the mini player (bottom left)
+                        .scaleEffect(1 - 0.55 * min(1, pull * 2.2), anchor: .bottomLeading)
                         .shadow(color: .black.opacity(0.5), radius: player.isPlaying ? 34 : 18, y: player.isPlaying ? 20 : 10)
                         .scaleEffect(player.isPlaying ? 1 : 0.88)
                         .animation(.spring(response: 0.55, dampingFraction: 0.68), value: player.isPlaying)
@@ -90,21 +102,22 @@ struct PlayerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            // the cover is a handle for pulling the player down (the lyrics and the queue scroll instead)
+            .modifier(HandleIf(on: mode == .cover))
             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: t.uid)
-            if mode == .lyrics || mode == .queue { compactTitle(t).padding(.bottom, 10) }
+            if mode == .lyrics || mode == .queue { compactTitle(t).padding(.bottom, 10).playerHandle() }
             VStack(spacing: 0) {
                 if mode == .cover { titleRow(t).padding(.bottom, 6) }
                 infoRow(t).frame(height: 30)
                 Scrubber()
                     .padding(.top, 4)
                 transport.padding(.top, 14)
-                modesBar.padding(.top, 22)
-                Image(systemName: "chevron.compact.down")
-                    .font(.system(size: 22, weight: .medium))
-                    .opacity(mode == .cover ? 0.25 : 0)
-                    .padding(.top, 6)
-                    .padding(.bottom, 2)
+                // the same breathing room as the header has from the top
+                modesBar.padding(.top, 20).padding(.bottom, 14)
             }
+            // pulled down: the controls fade first
+            .opacity(1 - min(1, pull * 3))
         }
         .padding(.horizontal, 24)
         .foregroundStyle(.primary)
@@ -119,7 +132,7 @@ struct PlayerView: View {
 
     private var header: some View {
         HStack {
-            Button { dismiss() } label: { Image(systemName: "chevron.down").font(.headline).frame(width: 40, height: 40) }
+            Button { close() } label: { Image(systemName: "chevron.down").font(.headline).frame(width: 40, height: 40) }
                 .glassCircle()
             Color.clear.frame(width: 48, height: 40)
             Spacer()
@@ -140,7 +153,7 @@ struct PlayerView: View {
                         TrackMenuItems(track: Track(t), context: player.context, inPlayer: true)
                         if !t.ref.hasPrefix("nd:") && !t.ref.hasPrefix("file:") && player.info?.kind != "library" {
                             Section {
-                                Button { picking = t } label: {
+                                Button { picking = PickTarget(t) } label: {
                                     Label("Выбрать другой файл", systemImage: "arrow.triangle.2.circlepath")
                                 }
                             }
@@ -159,8 +172,9 @@ struct PlayerView: View {
                 Color.clear.frame(width: 40, height: 40)
             }
         }
-        .padding(.top, 18)
-        .padding(.bottom, 8)
+        // just below the sheet's grabber, the same room as the mode bar has at the bottom
+        .padding(.top, 14)
+        .padding(.bottom, 6)
         .buttonStyle(.plain)
     }
 
@@ -484,5 +498,12 @@ struct LikeBurst: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { withAnimation(.easeOut(duration: 0.6)) { shot = true } }
         }
         .onAppear { shot = true }
+    }
+}
+
+private struct HandleIf: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View {
+        if on { content.playerHandle() } else { content }
     }
 }

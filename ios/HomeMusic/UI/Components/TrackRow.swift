@@ -199,6 +199,21 @@ struct TrackMenuItems: View {
                 Button { Router.shared.go(.ndArtist(artist)) } label: { Label("Перейти к исполнителю", systemImage: "music.microphone") }
             }
         }
+        // a library song: its cover, its file
+        if track.isOwned, track.ndSongId != nil {
+            Section("Файл") {
+                Menu {
+                    Button { LibraryActions.shared.betterCover(track) } label: { Label("Найти лучшую", systemImage: "sparkle.magnifyingglass") }
+                    Button { LibraryActions.shared.choosePhoto(track) } label: { Label("Выбрать из фото", systemImage: "photo.on.rectangle") }
+                } label: { Label("Обновить обложку", systemImage: "photo") }
+                Button { LibraryActions.shared.picking = PickTarget(library: track, liked: liked) } label: {
+                    Label("Выбрать другой файл", systemImage: "arrow.triangle.2.circlepath")
+                }
+                Button { LibraryActions.shared.refresh(track, liked: liked) } label: {
+                    Label("Обновить трек", systemImage: "arrow.clockwise")
+                }
+            }
+        }
         Section {
             Button(role: disliked ? nil : .destructive) { setDisliked(.track(track), !disliked) } label: {
                 Label(disliked ? "Убрать «Не нравится»" : "Не нравится", systemImage: "hand.thumbsdown")

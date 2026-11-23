@@ -3,7 +3,8 @@ import SwiftUI
 struct LibraryView: View {
     @Environment(Library.self) private var library
     @Environment(Downloads.self) private var downloads
-    @State private var recent: [NdAlbumOut] = []
+    @State private var recent: [Track] = []
+    @State private var appeared = false
 
     var body: some View {
         List {
@@ -23,19 +24,29 @@ struct LibraryView: View {
             }
             if !recent.isEmpty {
                 Section {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 16)], spacing: 20) {
-                        // buttons, not NavigationLinks: several links in one List row all fire on a tap
-                        ForEach(recent) { a in
-                            Button { Router.shared.go(.ndAlbum(a.id)) } label: {
-                                AlbumCard(title: a.title, subtitle: a.artist, cover: a.coverUrl, width: 160)
+                    // what you added yourself, newest first (not the mixes' own downloads, not files already there)
+                    ScrollView(.horizontal) {
+                        LazyHStack(alignment: .top, spacing: 14) {
+                            ForEach(Array(recent.enumerated()), id: \.element.ref) { i, t in
+                                NewSongCard(track: t, list: recent, order: i)
+                                    .opacity(appeared ? 1 : 0)
+                                    .offset(y: appeared ? 0 : 18)
+                                    .animation(.spring(response: 0.55, dampingFraction: 0.8).delay(min(0.4, Double(i) * 0.04)), value: appeared)
+                                    .scrollTransition(.animated(.smooth(duration: 0.35)), axis: .horizontal) { c, phase in
+                                        c.scaleEffect(phase.isIdentity ? 1 : 0.88).opacity(phase.isIdentity ? 1 : 0.5)
+                                            .rotation3DEffect(.degrees(phase.value * -12), axis: (x: 0, y: 1, z: 0))
+                                    }
                             }
-                            .buttonStyle(PressableStyle())
                         }
+                        .scrollTargetLayout()
+                        .padding(.horizontal, 20)
                     }
-                    .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+                    .scrollIndicators(.hidden)
+                    .scrollTargetBehavior(.viewAligned)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 10, trailing: 0))
                     .listRowSeparator(.hidden)
                 } header: {
-                    SectionTitle(text: "Недавно добавленные").textCase(nil)
+                    SectionTitle(text: "Новое").textCase(nil)
                 }
             }
         }
@@ -46,8 +57,9 @@ struct LibraryView: View {
     }
 
     private func load() async {
-        if let r = try? await HubClient.shared.ndAlbums(type: "newest", size: 30) {
+        if let r = try? await HubClient.shared.ndNew(limit: 40) {
             withAnimation(Theme.spring) { recent = r }
+            if !appeared { DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { appeared = true } }
         }
     }
 
@@ -632,5 +644,47 @@ struct MixView: View {
 
     private func load() async {
         do { mix = try await HubClient.shared.mix(id); error = nil } catch { self.error = error.localizedDescription }
+    }
+}
+
+
+/// A song in «Новое»: its cover, a tap plays it (and the rest of «Новое» after it); the menu is the track's.
+struct NewSongCard: View {
+    let track: Track
+    let list: [Track]
+    var order = 0
+    @Environment(Player.self) private var player
+
+    var body: some View {
+        let playing = player.track?.ref == track.ref
+        Button {
+            Haptics.tap()
+            let q = list.map { QueueTrack($0) }
+            player.listen(QueueTrack(track), in: q, context: "library_new", origin: "library")
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                ZStack(alignment: .bottomTrailing) {
+                    Cover(url: track.coverUrl ?? track.coverSmallUrl, size: 140, corner: 14)
+                        .shadow(color: .black.opacity(playing ? 0.3 : 0.12), radius: playing ? 14 : 6, y: playing ? 8 : 3)
+                    if playing {
+                        Image(systemName: player.isPlaying ? "waveform" : "pause.fill")
+                            .font(.footnote.weight(.bold))
+                            .symbolEffect(.variableColor.iterative, isActive: player.isPlaying)
+                            .foregroundStyle(Theme.onAccent)
+                            .frame(width: 30, height: 30)
+                            .background(Theme.accent, in: Circle())
+                            .padding(8)
+                            .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                Text(track.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    .foregroundStyle(playing ? Theme.accent : .primary)
+                Text(track.artistLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            .frame(width: 140, alignment: .leading)
+            .animation(.spring(response: 0.4, dampingFraction: 0.75), value: playing)
+        }
+        .buttonStyle(.pressable)
+        .contextMenu { TrackMenuItems(track: track, context: "library_new") }
     }
 }
