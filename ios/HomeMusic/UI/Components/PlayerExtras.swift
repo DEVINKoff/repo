@@ -382,7 +382,7 @@ private struct CinematicBar: View {
                     }
                     Button { Haptics.press(); player.toggle(); poke() } label: {
                         ZStack {
-                            Circle().fill(Theme.accent)
+                            Circle().fill(Theme.accentFill)
                             Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                                 .font(.system(size: 24, weight: .semibold))
                                 .foregroundStyle(Theme.onAccent)

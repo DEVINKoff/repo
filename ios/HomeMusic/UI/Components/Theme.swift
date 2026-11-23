@@ -24,14 +24,15 @@ enum AccentChoice: String, CaseIterable, Identifiable {
 
     private var hex: (light: UInt32, dark: UInt32) {
         switch self {
-        case .adaptive, .indigo: (0x5B4BFF, 0x8C82FF)
-        case .ocean: (0x0A84FF, 0x4FA8FF)
-        case .mint: (0x00A88F, 0x3EE0C0)
-        case .lime: (0x5E9E00, 0xA6E22E)
-        case .sun: (0xE08A00, 0xFFC233)
-        case .coral: (0xF0533A, 0xFF7A63)
-        case .rose: (0xE0336E, 0xFF6B9A)
-        case .violet: (0x9B3FE0, 0xC384FF)
+        // calmer, richer tones: each a little deeper in the light theme and a little brighter in the dark one
+        case .adaptive, .indigo: (0x5856D6, 0x8A87FF)
+        case .ocean: (0x1677E8, 0x5AA9FF)
+        case .mint: (0x0E9F8E, 0x5FE3CB)
+        case .lime: (0x4C9A2A, 0x9BE15D)
+        case .sun: (0xD9860B, 0xFFC857)
+        case .coral: (0xE8505B, 0xFF8A80)
+        case .rose: (0xD63A7A, 0xFF7EB3)
+        case .violet: (0x9446D6, 0xC79BFF)
         case .mono: (0x1C1C1E, 0xE8E8ED)
         }
     }
@@ -134,6 +135,11 @@ extension UIColor {
 enum Theme {
     /// The accent the user picked in «Ещё → Оформление» (views that read it redraw when it changes).
     @MainActor static var accent: Color { AppTheme.shared.accent.color }
+    /// The accent as a soft diagonal gradient (a lighter top left): for the big buttons.
+    @MainActor static var accentFill: LinearGradient {
+        LinearGradient(colors: [accent.mix(with: .white, by: 0.18), accent, accent.mix(with: .black, by: 0.12)],
+                       startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
     /// Text and icons drawn on the accent (black on «Моно» in the dark theme, white otherwise).
     @MainActor static var onAccent: Color { AppTheme.shared.accent.onColor }
     /// Switches: «Моно» would draw a white knob on a white track, so they stay green there.

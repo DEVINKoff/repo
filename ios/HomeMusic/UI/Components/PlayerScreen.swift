@@ -325,7 +325,7 @@ struct PlayerView: View {
             Spacer()
             Button { player.toggle() } label: {
                 ZStack {
-                    Circle().fill(Theme.accent)
+                    Circle().fill(Theme.accentFill)
                     if player.phase == .resolving || player.phase == .loading {
                         ProgressView().tint(Theme.onAccent).controlSize(.large)
                     } else {
@@ -338,6 +338,13 @@ struct PlayerView: View {
                 }
                 .frame(width: 82, height: 82)
                 .shadow(color: Theme.accent.opacity(0.45), radius: 18, y: 8)
+                // while it plays, soft rings of the accent keep leaving the button
+                .background {
+                    Circle().stroke(Theme.accent.opacity(0.5), lineWidth: 2)
+                        .phaseAnimator([false, true]) { c, out in
+                            c.scaleEffect(out ? 1.45 : 1).opacity(player.isPlaying ? (out ? 0 : 0.8) : 0)
+                        } animation: { out in out ? .easeOut(duration: 1.8) : .linear(duration: 0.01) }
+                }
             }
             .buttonStyle(.pressable)
             .sensoryFeedback(.impact(weight: .medium), trigger: player.isPlaying)

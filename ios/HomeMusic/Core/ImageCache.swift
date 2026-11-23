@@ -70,11 +70,15 @@ struct Cover: View {
         ZStack {
             if let image {
                 Image(uiImage: image).resizable().scaledToFill()
+                    .transition(.asymmetric(insertion: .modifier(active: Develop(on: true), identity: Develop(on: false)),
+                                            removal: .identity))
             } else {
                 LinearGradient(colors: [Color(.systemGray5), Color(.systemGray4)], startPoint: .topLeading, endPoint: .bottomTrailing)
                 Image(systemName: symbol)
                     .font(.system(size: (size ?? 60) * 0.36, weight: .medium))
                     .foregroundStyle(.secondary)
+                    .opacity(url == nil ? 1 : 0.5)
+                if url != nil { Shimmer() }
             }
         }
         .frame(width: size, height: size)
@@ -137,6 +141,33 @@ final class OnScreen {
         lastSent = key
         Task {
             do { try await HubClient.shared.listenPrefetch(refs) } catch { lastSent = "" }
+        }
+    }
+}
+
+
+/// A cover appearing: from a soft blur and a little zoom, like a photo developing.
+private struct Develop: ViewModifier {
+    let on: Bool
+    func body(content: Content) -> some View {
+        content.blur(radius: on ? 10 : 0).scaleEffect(on ? 1.06 : 1).opacity(on ? 0 : 1)
+    }
+}
+
+/// A soft light running across a placeholder while its picture loads.
+struct Shimmer: View {
+    @State private var run = false
+    var body: some View {
+        GeometryReader { g in
+            LinearGradient(colors: [.clear, .white.opacity(0.28), .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: g.size.width * 0.6)
+                .rotationEffect(.degrees(18))
+                .offset(x: run ? g.size.width * 1.3 : -g.size.width * 0.9)
+                .blendMode(.plusLighter)
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.25).repeatForever(autoreverses: false).delay(0.1)) { run = true }
         }
     }
 }

@@ -76,7 +76,7 @@ struct LibraryView: View {
                     Text("\(badge)")
                         .font(.caption.weight(.bold).monospacedDigit())
                         .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Theme.accent, in: Capsule())
+                        .background(Theme.accentFill, in: Capsule())
                         .foregroundStyle(.white)
                         .transition(.scale.combined(with: .opacity))
                 }
@@ -221,7 +221,7 @@ struct LikedView: View {
                 .foregroundStyle(Theme.onAccent)
                 .padding(.horizontal, 16)
                 .frame(height: 38)
-                .background(Theme.accent, in: Capsule())
+                .background(Theme.accentFill, in: Capsule())
             }
             .buttonStyle(.pressable)
             .disabled(songs.isEmpty)

@@ -244,9 +244,9 @@ struct NothingPlaying: View {
 
 /// The opening, about 2.4 s, on pure black (pure white in the light theme), all of it a function of time:
 /// 1. drops of liquid glass orbit, seen by their rims (lit on black, shaded on white) and edges splitting the light;
-/// 2. they gather into one lens, which breathes once;
-/// 3. the lens flows down into the dock and stretches into its shape; the background lifts and the app is there,
-///    its dock where the glass landed.
+/// 2. they gather into five glass bars side by side — an equalizer that dances for a moment;
+/// 3. the bars run down, melt into one another and stretch into the dock; the background lifts and the app is
+///    there, its dock where the glass landed.
 struct LaunchSplash: View {
     let reveal: () -> Void
     let done: () -> Void
@@ -292,14 +292,13 @@ struct LaunchSplash: View {
 
     @ViewBuilder private func frame(_ t: Double, _ size: CGSize) -> some View {
         let gather = Self.ease((t - 0.7) / 0.45)
-        let breathe = 1 + 0.05 * sin(Self.clamp((t - 1.1) / 0.22) * .pi)
-        let split = (t - 1.3) / 0.62
+        let split = (t - 1.32) / 0.6
         let black = 1 - Self.ease((t - Self.revealAt) / 0.42)
         let fade = 1 - Self.ease((t - 2.0) / 0.38)
         ZStack {
             (scheme == .dark ? Color.black : Color.white).opacity(black)
             if split <= 0 {
-                drops(t, gather: gather).scaleEffect(breathe)
+                drops(t, gather: gather, size: size)
             } else {
                 halves(Self.easeOutBack(split), size)
                     .opacity(fade)
@@ -308,46 +307,55 @@ struct LaunchSplash: View {
         .frame(width: size.width, height: size.height)
     }
 
-    /// The lens' two parts on their way to the island and the dock (`k` 0 → 1, a little past and back).
+    /// The five bars of the equalizer (their heights dance with time), around the middle of the screen.
+    private static func bar(_ i: Int, _ t: Double, _ c: CGPoint) -> CGRect {
+        let w: CGFloat = 24
+        let h: CGFloat = 38 + 52 * CGFloat(abs(sin(t * 5.2 + Double(i) * 0.9)))
+        return CGRect(x: c.x + CGFloat(i - 2) * 33 - w / 2, y: c.y - h / 2, width: w, height: h)
+    }
+
+    /// The bars on their way into the dock (`k` 0 → 1, a little past and back): each takes a fifth of the dock and
+    /// they melt together on the way.
     private func halves(_ k: Double, _ size: CGSize) -> some View {
-        let lens: CGFloat = 150
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
-        // the floating dock (the tab bar) at the bottom
         let dockW = size.width - 40, dockH: CGFloat = 62
         let dockY = size.height - (insets.bottom > 0 ? 52 : 40)
-        let dock = CGRect(x: c.x - dockW / 2, y: dockY - dockH / 2, width: dockW, height: dockH)
-
-        func shape(_ to: CGRect) -> some View {
-            let w = Self.lerp(lens, to.width, k), h = Self.lerp(lens, to.height, k)
-            let x = Self.lerp(c.x, to.midX, k), y = Self.lerp(c.y, to.midY, k)
-            return Color.clear
-                .frame(width: max(1, w), height: max(1, h))
-                .modifier(GlassPill())
-                .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark) }
-                .position(x: x, y: y)
-        }
-
+        let seg = dockW / 5
         return glassGroup {
             ZStack {
-                shape(dock)
+                ForEach(0..<5, id: \.self) { i in
+                    // a bar leaves a moment after its left neighbour: a wave runs across
+                    let ki = Self.easeOutBack(Self.clamp(k * 1.25 - Double(i) * 0.06))
+                    let from = Self.bar(i, 1.32, c)
+                    let to = CGRect(x: c.x - dockW / 2 + seg * CGFloat(i) - 6, y: dockY - dockH / 2, width: seg + 12, height: dockH)
+                    let w = Self.lerp(from.width, to.width, ki), h = Self.lerp(from.height, to.height, ki)
+                    Color.clear
+                        .frame(width: max(1, w), height: max(1, h))
+                        .modifier(GlassPill())
+                        .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark).opacity(1 - 0.5 * ki) }
+                        .position(x: Self.lerp(from.midX, to.midX, ki), y: Self.lerp(from.midY, to.midY, ki))
+                }
             }
         }
     }
 
-    /// The orbiting drops, seen by their own light; one lens once gathered.
-    private func drops(_ t: Double, gather: Double) -> some View {
-        glassGroup {
+    /// The orbiting drops, seen by their own light; once gathered, the five bars of the equalizer.
+    private func drops(_ t: Double, gather: Double, size: CGSize) -> some View {
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        return glassGroup {
             ZStack {
                 ForEach(0..<Self.orbits.count, id: \.self) { i in
                     let o = Self.orbits[i]
                     let a = o.phase + t * o.speed
-                    let r = o.r * (0.8 + 0.2 * sin(t * 2.4 + o.phase)) * CGFloat(1 - gather)
-                    let d = Self.lerp(o.size, 150, gather)
+                    let r = o.r * (0.8 + 0.2 * sin(t * 2.4 + o.phase))
+                    let bar = Self.bar(i, t, c)
+                    let w = Self.lerp(o.size, bar.width, gather), h = Self.lerp(o.size, bar.height, gather)
+                    let x = Self.lerp(c.x + r * cos(a), bar.midX, gather), y = Self.lerp(c.y + r * sin(a), bar.midY, gather)
                     Color.clear
-                        .frame(width: d, height: d)
-                        .modifier(GlassDrop())
-                        .overlay { GlassLight(shape: Circle(), dark: scheme == .dark).opacity(1 - 0.35 * gather) }
-                        .offset(x: r * cos(a), y: r * sin(a))
+                        .frame(width: w, height: h)
+                        .modifier(GlassPill())
+                        .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark).opacity(1 - 0.3 * gather) }
+                        .position(x: x, y: y)
                 }
             }
         }
@@ -355,7 +363,7 @@ struct LaunchSplash: View {
 
     @ViewBuilder private func glassGroup<C: View>(@ViewBuilder _ c: () -> C) -> some View {
         if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 38) { c() }
+            GlassEffectContainer(spacing: 6) { c() }
         } else {
             c()
         }
