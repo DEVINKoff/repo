@@ -161,6 +161,8 @@ struct StandByWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: StandBy.kind, provider: StandByProvider()) { entry in
             StandByView(entry: entry)
+                // a tap outside the buttons opens the app on its player
+                .widgetURL(URL(string: "homemusic://player"))
                 .containerBackground(for: .widget) {
                     LinearGradient(colors: [Color(red: 0.07, green: 0.06, blue: 0.12), .black], startPoint: .top, endPoint: .bottom)
                 }

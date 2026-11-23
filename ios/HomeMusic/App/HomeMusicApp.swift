@@ -172,6 +172,10 @@ struct MainTabs: View {
             .sheet(item: $picker.request) { PlaylistPickerSheet(request: $0) }
             .onChange(of: app.playerOpen) { _, open in AppDelegate.allowLandscape(open); Haptics.soft(open ? 0.7 : 0.4) }
             .onChange(of: router.tab) { Haptics.select() }
+            // homemusic://player (the StandBy widget): straight to the full player
+            .onOpenURL { url in
+                if url.scheme == "homemusic", url.host == "player", player.track != nil { app.playerOpen = true }
+            }
             .onChange(of: app.route) { _, r in
                 if r == .downloads { router.openDownloads(); app.route = nil }
             }
@@ -254,8 +258,8 @@ struct LaunchSplash: View {
     @State private var insets = UIEdgeInsets.zero
     @Environment(\.colorScheme) private var scheme
 
-    private static let total = 2.75
-    private static let revealAt = 2.08
+    private static let total = 3.4
+    private static let revealAt = 2.55
 
     var body: some View {
         GeometryReader { g in
@@ -280,10 +284,14 @@ struct LaunchSplash: View {
     private static func ease(_ x: Double) -> Double { let c = clamp(x); return c * c * (3 - 2 * c) }
     /// eases out past the end a little and settles (a liquid's overshoot)
     private static func easeOutBack(_ x: Double) -> Double {
-        let c = clamp(x), k = 1.25
+        let c = clamp(x), k = 0.55
         return 1 + (k + 1) * pow(c - 1, 3) + k * pow(c - 1, 2)
     }
     private static func lerp(_ a: CGFloat, _ b: CGFloat, _ k: Double) -> CGFloat { a + (b - a) * CGFloat(k) }
+    private static func easeInOut(_ x: Double) -> Double {
+        let c = clamp(x)
+        return c < 0.5 ? 4 * c * c * c : 1 - pow(-2 * c + 2, 3) / 2
+    }
 
     private static let orbits: [(r: CGFloat, speed: Double, size: CGFloat, phase: Double)] = [
         (96, 1.5, 86, 0), (72, -2.0, 60, 1.3), (118, 1.1, 46, 2.6), (54, 2.5, 40, 3.8), (136, -1.3, 34, 5.0),
@@ -291,10 +299,10 @@ struct LaunchSplash: View {
 
     @ViewBuilder private func frame(_ t: Double, _ size: CGSize) -> some View {
         let gather = Self.ease((t - 0.7) / 0.45)
-        let merge = Self.ease((t - 1.32) / 0.34)
-        let split = (t - 1.72) / 0.6
-        let black = 1 - Self.ease((t - Self.revealAt) / 0.42)
-        let fade = 1 - Self.ease((t - 2.36) / 0.38)
+        let merge = Self.ease((t - 1.32) / 0.4)
+        let split = (t - 1.78) / 1.1
+        let black = 1 - Self.ease((t - Self.revealAt) / 0.65)
+        let fade = 1 - Self.ease((t - 2.8) / 0.6)
         ZStack {
             (scheme == .dark ? Color.black : Color.white).opacity(black)
             if merge <= 0 {
@@ -341,11 +349,11 @@ struct LaunchSplash: View {
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
         let dockW = size.width - 40, dockH: CGFloat = 62
         let dockY = size.height - (insets.bottom > 0 ? 52 : 40)
-        // it falls first and widens late: a drop, then a dock
-        let fall = Self.easeOutBack(Self.clamp(k * 1.15))
-        let widen = Self.easeOutBack(Self.clamp((k - 0.25) / 0.75))
+        // it falls first, gently, and widens as it lands: a drop, then a dock
+        let fall = Self.easeInOut(Self.clamp(k * 1.1))
+        let widen = Self.easeOutBack(Self.clamp((k - 0.35) / 0.65))
         let w = Self.lerp(Self.drop, dockW, widen)
-        let h = Self.lerp(Self.drop, dockH, Self.clamp(k * 1.4))
+        let h = Self.lerp(Self.drop, dockH, Self.ease(Self.clamp((k - 0.15) / 0.7)))
         return glassGroup {
             Color.clear
                 .frame(width: max(1, w), height: max(1, h))

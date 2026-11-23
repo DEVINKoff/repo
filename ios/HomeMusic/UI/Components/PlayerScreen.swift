@@ -119,6 +119,17 @@ struct PlayerView: View {
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: mode)
     }
 
+    /// The playing track for its menu: a song the library has (the Hub says so while playing it) gets the library
+    /// actions too — its cover, its file.
+    private func menuTrack(_ t: QueueTrack) -> Track {
+        var tr = Track(t)
+        if tr.ndSongId == nil, let id = player.info?.ndSongId, player.track?.uid == t.uid {
+            tr.ndSongId = id
+            tr.owned = true
+        }
+        return tr
+    }
+
     /// Turns the phone's UI sideways (the cinematic mode) or back.
     private func rotate(landscape: Bool) {
         Haptics.soft()
@@ -145,7 +156,7 @@ struct PlayerView: View {
                     .glassCircle()
                     .accessibilityLabel("Кинорежим")
                     Menu {
-                        TrackMenuItems(track: Track(t), context: player.context, inPlayer: true)
+                        TrackMenuItems(track: menuTrack(t), context: player.context, inPlayer: true)
                         if !t.ref.hasPrefix("nd:") && !t.ref.hasPrefix("file:") && player.info?.kind != "library" {
                             Section {
                                 Button { picking = PickTarget(t) } label: {

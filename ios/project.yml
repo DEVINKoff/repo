@@ -43,6 +43,10 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         UIBackgroundModes: [audio]
+        # homemusic://player — the StandBy widget opens the full player
+        CFBundleURLTypes:
+          - CFBundleURLName: app.homemusic.ios
+            CFBundleURLSchemes: [homemusic]
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: "HomeMusic подключается к вашему серверу HomeMusic в домашней сети."
         NSAppTransportSecurity:

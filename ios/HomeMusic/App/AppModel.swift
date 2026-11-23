@@ -103,6 +103,7 @@ final class AppModel {
         do {
             let me = try await HubClient.shared.me()
             signedIn(me)
+            Task { await learnRemote() }
         } catch let e as ApiError where e.status == 401 {
             authOptions = try? await HubClient.shared.authOptions()
             stage = .login
@@ -170,8 +171,25 @@ final class AppModel {
         }
     }
 
+    private let remoteAutoKey = "hm-hub-remote-auto"
+    /// the outside address came from the Hub itself (its tunnel), not typed: it follows the Hub's when that changes
+    var remoteIsAuto: Bool { Persist.defaults.bool(forKey: remoteAutoKey) }
+
+    /// At home: the Hub tells its outside address (a Cloudflare quick tunnel on its PC gets a new one on every
+    /// restart); taken over unless the user typed their own.
+    func learnRemote() async {
+        guard let home = serverURL, HubClient.shared.baseURL == home,
+              let health = try? await HubClient.shared.health(), let s = health.remoteUrl, let url = URL(string: s) else { return }
+        guard remoteURL == nil || (remoteIsAuto && remoteURL != url) else { return }
+        remoteURL = url
+        HubClient.shared.remoteURL = url
+        Persist.defaults.set(url.absoluteString, forKey: remoteKey)
+        Persist.defaults.set(true, forKey: remoteAutoKey)
+    }
+
     /// Sets (or, with an empty input, removes) the outside address; it must answer as a Hub.
     func setRemote(_ input: String) async -> String? {
+        Persist.defaults.set(false, forKey: remoteAutoKey)
         let s = input.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.isEmpty {
             remoteURL = nil
@@ -193,7 +211,10 @@ final class AppModel {
     }
 
     func foreground() {
-        Task { await HubClient.shared.preferHome() }
+        Task {
+            await HubClient.shared.preferHome()
+            await learnRemote()
+        }
         guard stage == .ready else { return }
         HubEvents.shared.start()
         Stars.shared.refresh()

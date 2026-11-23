@@ -263,6 +263,9 @@ struct RemoteAddressRow: View {
                 HStack(spacing: 6) {
                     if HubClient.shared.onRemote { Image(systemName: "globe").foregroundStyle(Theme.accent) }
                     Text(app.remoteURL?.host ?? "не задан").lineLimit(1)
+                    if app.remoteIsAuto && app.remoteURL != nil {
+                        Text("авто").font(.caption2.weight(.semibold)).foregroundStyle(Theme.accent)
+                    }
                 }
             } label: {
                 Text("Адрес вне дома").foregroundStyle(.primary)

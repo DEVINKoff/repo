@@ -247,8 +247,8 @@ extension Track {
         isrc = q.isrc
         coverUrl = q.coverUrl
         coverSmallUrl = q.coverSmallUrl
-        ndSongId = q.ndSongId
-        owned = q.ndSongId != nil || q.ref.hasPrefix("nd:")
+        ndSongId = q.ndSongId ?? (q.ref.hasPrefix("nd:") ? String(q.ref.dropFirst(3)) : nil)
+        owned = ndSongId != nil
     }
 
     /// A Hub library track found by the search (`LibTrackOut`): played by its Navidrome song.

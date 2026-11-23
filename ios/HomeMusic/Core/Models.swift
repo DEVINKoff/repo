@@ -59,6 +59,8 @@ struct AuthOptionsOut: Codable, Sendable {
 struct OkOut: Codable, Sendable { var ok: Bool? }
 
 struct HealthOut: Codable, Sendable {
+    /// the Hub's address from outside (a Cloudflare quick tunnel on its PC), when there is one
+    var remoteUrl: String?
     var capabilities: [String]?
     var ok: Bool?
     var navidrome: Bool?
