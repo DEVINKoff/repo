@@ -392,8 +392,8 @@ final class Player {
             })
         }
         if let prepared {
-            // the DJ crossfade: the player already playing this track (from where its sound starts) takes over
-            avPlayer.pause()
+            // the DJ crossfade: the player already playing this track (from where its sound starts) takes over;
+            // the one before it keeps playing — fading out — as the crossfade's `tail`
             bind(prepared)
             if prepared.timeControlStatus != .paused { phase = .playing }
         } else {
@@ -722,7 +722,6 @@ final class Player {
     }
 
     func resume() {
-        if crossfading { tail?.play() }
         guard track != nil else { return }
         if phase == .error || phase == .ended || item == nil { return start(queue, at: index) }
         phase = (info != nil || position > 0) ? .loading : .resolving
@@ -732,7 +731,8 @@ final class Player {
     }
 
     func pause() {
-        tail?.pause()
+        // a pause in the middle of a blend: the blend is over, the outgoing track stops
+        if crossfading { endCrossfade() }
         guard track != nil, phase != .error, phase != .ended else { return }
         avPlayer.pause()
         phase = .paused
@@ -1012,12 +1012,10 @@ extension Player {
         tail = nil
         if crossfading, let ref = track?.ref { avPlayer.volume = level(for: ref) }
         crossfading = false
-        if spareRef != nil && spareRef != blendNext?.ref {
-            spare?.replaceCurrentItem(with: nil)
-            spare = nil
-            spareRef = nil
-            spareSeek = nil
-        }
+        spare?.replaceCurrentItem(with: nil)
+        spare = nil
+        spareRef = nil
+        spareSeek = nil
     }
 
     private func rampVolume(_ p: AVPlayer, to v: Float, over secs: Double) {
