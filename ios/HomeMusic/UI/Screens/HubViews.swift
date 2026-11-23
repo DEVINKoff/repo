@@ -92,6 +92,7 @@ struct MoreView: View {
     @Environment(AppModel.self) private var app
     @Environment(SmartShuffle.self) private var smart
     @State private var light = Settings.lightOnCellular
+    @State private var crossfadeOn = Settings.crossfade
     @State private var settings: MixSettingsOut?
 
     var body: some View {
@@ -123,8 +124,13 @@ struct MoreView: View {
                 Toggle(isOn: $light) { Label("Экономия трафика", systemImage: "antenna.radiowaves.left.and.right") }
                     .tint(Theme.toggle)
                     .onChange(of: light) { Settings.lightOnCellular = light }
+                Toggle(isOn: $crossfadeOn) {
+                    Label("Кроссфейд как у диджея", systemImage: "slider.horizontal.below.square.and.square.filled")
+                }
+                .tint(Theme.toggle)
+                .onChange(of: crossfadeOn) { Settings.crossfade = crossfadeOn }
             } header: { Text("Воспроизведение") } footer: {
-                Text("Умное перемешивание добавляет рекомендации между песнями плейлистов и «Понравившихся». Экономия трафика: в сотовой сети Хаб отдаёт лёгкую копию (Opus 160 кбит/с).")
+                Text("Умное перемешивание добавляет рекомендации между песнями плейлистов и «Понравившихся». Экономия трафика: в сотовой сети Хаб отдаёт лёгкую копию (Opus 160 кбит/с). Кроссфейд: следующий трек входит там, где у текущего начинается концовка, без тишины между ними и на одной громкости; альбомы по порядку играют без него.")
             }
 
             AppearanceSection()

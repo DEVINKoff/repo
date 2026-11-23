@@ -64,8 +64,19 @@ final class Player {
 
     // MARK: Internals
 
-    @ObservationIgnored private let avPlayer = AVPlayer()
+    @ObservationIgnored private var avPlayer = AVPlayer()
     @ObservationIgnored private var item: AVPlayerItem?
+    // the DJ crossfade
+    @ObservationIgnored var shapes: [String: TrackShape] = [:]
+    @ObservationIgnored var shapeAsked: Set<String> = []
+    /// the next track, loaded ahead (muted) to come in at the outro
+    @ObservationIgnored private var spare: AVPlayer?
+    @ObservationIgnored private var spareRef: String?
+    @ObservationIgnored private var spareSeek: NSKeyValueObservation?
+    /// the track going out while the next one comes in
+    @ObservationIgnored private var tail: AVPlayer?
+    @ObservationIgnored private var fadeTimer: Timer?
+    @ObservationIgnored private(set) var crossfading = false
     @ObservationIgnored private var itemObservers: [NSKeyValueObservation] = []
     @ObservationIgnored private var playerObserver: NSKeyValueObservation?
     @ObservationIgnored private var timeObserver: Any?
@@ -125,14 +136,7 @@ final class Player {
         smartChosen = m?.shuffle == true && m?.smart == true
         repeatMode = m?.repeatMode ?? .off
 
-        avPlayer.automaticallyWaitsToMinimizeStalling = true
-        playerObserver = avPlayer.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
-            let status = p.timeControlStatus
-            Task { @MainActor in self?.timeControlChanged(status) }
-        }
-        timeObserver = avPlayer.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
-            MainActor.assumeIsolated { self?.timeUpdate(t.seconds) }
-        }
+        bind(avPlayer)
         endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification, object: nil, queue: .main) { [weak self] note in
             let ended = note.object as? AVPlayerItem
             MainActor.assumeIsolated {
@@ -160,6 +164,25 @@ final class Player {
         }
         recover()
         NowPlaying.setUp(self)
+    }
+
+    /// Makes `p` the main player: its play / pause and its time drive everything (the DJ crossfade hands the main
+    /// role to the player that already plays the next track).
+    private func bind(_ p: AVPlayer) {
+        if let o = timeObserver { avPlayer.removeTimeObserver(o) }
+        playerObserver?.invalidate()
+        avPlayer = p
+        p.automaticallyWaitsToMinimizeStalling = true
+        playerObserver = p.observe(\.timeControlStatus, options: [.new]) { [weak self] p, _ in
+            let status = p.timeControlStatus
+            Task { @MainActor in
+                guard let self, p === self.avPlayer else { return }
+                self.timeControlChanged(status)
+            }
+        }
+        timeObserver = p.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] t in
+            MainActor.assumeIsolated { self?.timeUpdate(t.seconds) }
+        }
     }
 
     static func configureAudioSession() {
@@ -273,6 +296,7 @@ final class Player {
         let d = item.duration.seconds
         if d.isFinite && d > 0 && info?.kind != "preview" { duration = d }
         persist()
+        crossfadeTick()
     }
 
     private func ended() {
@@ -322,10 +346,11 @@ final class Player {
     /// `auto`: reached by the previous track ending; a track that can't be played is then skipped.
     /// `retry`: the same track again after a lost connection (the tries are counted, nothing is reported twice).
     private func start(_ list: [QueueTrack], at i: Int, auto: Bool = false, position startAt: Double = 0, autoplay: Bool = true,
-                       retry: Bool = false) {
+                       retry: Bool = false, prepared: AVPlayer? = nil) {
         guard list.indices.contains(i) else { return }
         let t = list[i]
         if !retry { retries = 0 }
+        if prepared == nil { endCrossfade() }
         reportEnd()
         // a recommendation of the smart shuffle reports under its session, the list's own songs under their list
         played = OpenPlay(ref: t.ref, context: t.rec.map { "smart:\($0.session)" } ?? listContext, launch: listLaunch,
@@ -344,8 +369,9 @@ final class Player {
         persist(force: true)
 
         itemObservers = []
-        let newItem = makeItem(t.ref)
+        let newItem = prepared?.currentItem ?? makeItem(t.ref)
         item = newItem
+        if prepared != nil { pendingSeek = 0 }
         if let newItem {
             itemObservers.append(newItem.observe(\.status, options: [.new]) { [weak self] it, _ in
                 let status = it.status
@@ -365,10 +391,18 @@ final class Player {
                 }
             })
         }
-        avPlayer.replaceCurrentItem(with: newItem)
-        if autoplay {
-            Player.configureAudioSession()
-            avPlayer.play()
+        if let prepared {
+            // the DJ crossfade: the player already playing this track (from where its sound starts) takes over
+            avPlayer.pause()
+            bind(prepared)
+            if prepared.timeControlStatus != .paused { phase = .playing }
+        } else {
+            avPlayer.replaceCurrentItem(with: newItem)
+            avPlayer.volume = level(for: t.ref)
+            if autoplay {
+                Player.configureAudioSession()
+                avPlayer.play()
+            }
         }
         NowPlaying.update(self, newTrack: true)
 
@@ -386,6 +420,7 @@ final class Player {
                 self.fillPlaceholder(out)
                 self.reportStart()
                 self.prefetchNext()
+                self.loadShape(ref)
                 NowPlaying.update(self)
             } catch {
                 guard let self, !(error is CancellationError), !Task.isCancelled, self.resolvingRef == ref else { return }
@@ -427,7 +462,10 @@ final class Player {
         guard let next, prefetching?.ref != next.ref else { return }
         prefetching?.task.cancel()
         let ref = next.ref
-        prefetching = (ref, Task { _ = try? await HubClient.shared.listen(ref) })
+        prefetching = (ref, Task { [weak self] in
+            _ = try? await HubClient.shared.listen(ref)
+            self?.loadShape(ref)
+        })
     }
 
     // MARK: Lists
@@ -684,6 +722,7 @@ final class Player {
     }
 
     func resume() {
+        if crossfading { tail?.play() }
         guard track != nil else { return }
         if phase == .error || phase == .ended || item == nil { return start(queue, at: index) }
         phase = (info != nil || position > 0) ? .loading : .resolving
@@ -693,6 +732,7 @@ final class Player {
     }
 
     func pause() {
+        tail?.pause()
         guard track != nil, phase != .error, phase != .ended else { return }
         avPlayer.pause()
         phase = .paused
@@ -721,6 +761,7 @@ final class Player {
 
     /// Stops and hides the player.
     func stop() {
+        endCrossfade()
         reportEnd()
         resolving?.cancel()
         resolving = nil
@@ -824,9 +865,170 @@ final class Player {
 
 /// Settings of the app (More): stored choices.
 enum Settings {
+    /// «Кроссфейд»: tracks blend into each other like a DJ's (where the outro starts, past the silences, at one
+    /// loudness).
+    static var crossfade: Bool {
+        get { Persist.defaults.object(forKey: "hm-crossfade") as? Bool ?? true }
+        set { Persist.defaults.set(newValue, forKey: "hm-crossfade") }
+    }
+
     /// «Экономия трафика»: on a metered network (cellular, a hotspot) the Hub's light Opus copy (`q=mobile`).
     static var lightOnCellular: Bool {
         get { Persist.defaults.object(forKey: "hm-light-cellular") as? Bool ?? true }
         set { Persist.defaults.set(newValue, forKey: "hm-light-cellular") }
+    }
+}
+
+
+// MARK: - DJ crossfade
+
+/// A track's shape from the Hub (`/api/listen/shape`): where its sound starts and ends, where its outro begins, how
+/// loud it is.
+struct TrackShape: Codable, Sendable {
+    var duration: Double?
+    var leadIn: Double?
+    var outro: Double?
+    var end: Double?
+    var gainDb: Double?
+    var fadesOut: Bool?
+}
+
+extension HubClient {
+    func shape(_ ref: String) async throws -> TrackShape {
+        try await request("GET", "/api/listen/shape", query: ["ref": ref], timeout: 70)
+    }
+}
+
+extension Player {
+    /// The Hub's shape of a track, asked once (it reads the file when its copy is on the Hub's disk).
+    func loadShape(_ ref: String) {
+        guard Settings.crossfade, shapes[ref] == nil, !shapeAsked.contains(ref) else { return }
+        shapeAsked.insert(ref)
+        Task { [weak self] in
+            guard let s = try? await HubClient.shared.shape(ref), s.end != nil else {
+                self?.shapeAsked.remove(ref)
+                return
+            }
+            self?.shapes[ref] = s
+            // the playing track: its loudness evened out now
+            if let self, self.track?.ref == ref, !self.crossfading {
+                self.rampVolume(self.avPlayer, to: self.level(for: ref), over: 1.5)
+            }
+        }
+    }
+
+    /// The track's volume, evening out loudness: a loud master is brought down to the others' level (never up —
+    /// AVPlayer can't go past 1).
+    func level(for ref: String) -> Float {
+        guard Settings.crossfade, let g = shapes[ref]?.gainDb else { return 1 }
+        return Float(min(1, max(0.35, pow(10, min(0, g) / 20))))
+    }
+
+    /// The next track in line for a blend, if this transition should blend: not in «repeat one», not inside an
+    /// album played in order (its tracks run into each other as they are), not for previews or short tracks.
+    private var blendNext: QueueTrack? {
+        guard Settings.crossfade, repeatMode != .one, let cur = track, info?.kind != "preview", duration > 45 else { return nil }
+        let next = queue.indices.contains(index + 1) ? queue[index + 1] : (repeatMode == .all && !onWave ? queue.first : nil)
+        guard let next, next.ref != cur.ref else { return nil }
+        if let a = cur.albumRef, a == next.albumRef, !shuffle { return nil }
+        if context.hasPrefix("album") && !shuffle { return nil }
+        return next
+    }
+
+    /// Where the blend into the next track starts, and how long it lasts.
+    private var blendWindow: (start: Double, length: Double)? {
+        guard duration > 45 else { return nil }
+        if let s = shapes[track?.ref ?? ""], let outro = s.outro, let end = s.end, end > outro {
+            return (outro, min(12, max(3, end - outro)))
+        }
+        return (duration - 6, 6)
+    }
+
+    /// Every tick of the playing track: loads the next one ahead in the spare player, and starts the blend at the
+    /// outro.
+    func crossfadeTick() {
+        guard !crossfading, phase == .playing, !scrubbing, let next = blendNext, let w = blendWindow else { return }
+        if position >= w.start - 10, spare == nil || spareRef != next.ref { prepareSpare(next) }
+        if position >= w.start, let spare, spareRef == next.ref, spare.currentItem?.status == .readyToPlay {
+            beginCrossfade(next, spare, length: w.length)
+        }
+    }
+
+    private func prepareSpare(_ next: QueueTrack) {
+        guard let item = makeItem(next.ref) else { return }
+        let p = AVPlayer(playerItem: item)
+        p.automaticallyWaitsToMinimizeStalling = false
+        p.volume = 0
+        spare = p
+        spareRef = next.ref
+        let start = shapes[next.ref]?.leadIn ?? 0
+        if start > 0.2 {
+            spareSeek = item.observe(\.status, options: [.new]) { it, _ in
+                guard it.status == .readyToPlay else { return }
+                Task { @MainActor in _ = await p.seek(to: CMTime(seconds: start, preferredTimescale: 600)) }
+            }
+        }
+    }
+
+    private func beginCrossfade(_ next: QueueTrack, _ incoming: AVPlayer, length: Double) {
+        let outgoing = avPlayer
+        let fadesOut = shapes[track?.ref ?? ""]?.fadesOut == true
+        let target = level(for: next.ref)
+        let from = outgoing.volume
+        crossfading = true
+        tail = outgoing
+        spare = nil
+        spareRef = nil
+        spareSeek = nil
+        incoming.volume = 0
+        incoming.play()
+        // the track that reached its outro counts as played to the end, as when it ends by itself
+        reportEnd(ended: true)
+        let ni = queue.indices.contains(index + 1) ? index + 1 : 0
+        start(queue, at: ni, auto: true, position: shapes[next.ref]?.leadIn ?? 0, prepared: incoming)
+        Haptics.soft(0.25)
+        let began = CACurrentMediaTime()
+        fadeTimer?.invalidate()
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { timer.invalidate(); return }
+                let x = min(1, (CACurrentMediaTime() - began) / length)
+                // equal power; a track that fades out by itself is let go linearly, a hard ending a bit sooner
+                let outCurve = fadesOut ? 1 - x : cos(min(1, x * 1.1) * .pi / 2)
+                let inCurve = sin(min(1, x * (fadesOut ? 1.0 : 1.25)) * .pi / 2)
+                outgoing.volume = from * Float(max(0, outCurve))
+                if self.avPlayer === incoming { incoming.volume = target * Float(inCurve) }
+                if x >= 1 { self.endCrossfade() }
+            }
+        }
+    }
+
+    /// The blend is over (or cut short by a skip, a new list, a pause-and-skip): the outgoing track stops.
+    func endCrossfade() {
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        tail?.pause()
+        tail?.replaceCurrentItem(with: nil)
+        tail = nil
+        if crossfading, let ref = track?.ref { avPlayer.volume = level(for: ref) }
+        crossfading = false
+        if spareRef != nil && spareRef != blendNext?.ref {
+            spare?.replaceCurrentItem(with: nil)
+            spare = nil
+            spareRef = nil
+            spareSeek = nil
+        }
+    }
+
+    private func rampVolume(_ p: AVPlayer, to v: Float, over secs: Double) {
+        let from = p.volume
+        let began = CACurrentMediaTime()
+        Timer.scheduledTimer(withTimeInterval: 1 / 20, repeats: true) { timer in
+            MainActor.assumeIsolated {
+                let x = Float(min(1, (CACurrentMediaTime() - began) / secs))
+                p.volume = from + (v - from) * x
+                if x >= 1 { timer.invalidate() }
+            }
+        }
     }
 }
