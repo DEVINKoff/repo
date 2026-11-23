@@ -16,7 +16,6 @@ struct PlayerView: View {
     init(close: (() -> Void)? = nil) {
         self.close = close ?? { MainActor.assumeIsolated { AppModel.shared.playerOpen = false } }
     }
-    @Environment(\.playerPull) private var pull
     @State private var mode: Mode = .cover
     @State private var isLandscape = false
     @Namespace private var hero
@@ -68,6 +67,9 @@ struct PlayerView: View {
             .animation(.spring(response: 0.4, dampingFraction: 0.86), value: artistChoice.isEmpty)
             .animation(.smooth(duration: 0.4), value: geo.size.width > geo.size.height * 1.15)
         }
+        .presentationBackground(Color(.systemBackground))
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isLandscape)
         .sheet(item: Binding(get: { picking ?? LibraryActions.shared.picking },
                              set: { picking = $0; LibraryActions.shared.picking = $0 })) { PickFileSheet(target: $0) }
         .photosPicker(isPresented: Binding(get: { LibraryActions.shared.photoFor != nil },
@@ -81,13 +83,11 @@ struct PlayerView: View {
     /// The first screen of the player (the rest is below it).
     private func page(_ t: QueueTrack, art: CGFloat) -> some View {
         VStack(spacing: 0) {
-            header.playerHandle()
+            header
             ZStack {
                 switch mode {
                 case .cover:
                     LiveCover(track: t, size: art, corner: 26, playing: player.isPlaying)
-                        // pulled down: the cover shrinks toward the mini player (bottom left)
-                        .scaleEffect(1 - 0.55 * min(1, pull * 2.2), anchor: .bottomLeading)
                         .shadow(color: .black.opacity(0.5), radius: player.isPlaying ? 34 : 18, y: player.isPlaying ? 20 : 10)
                         .scaleEffect(player.isPlaying ? 1 : 0.88)
                         .animation(.spring(response: 0.55, dampingFraction: 0.68), value: player.isPlaying)
@@ -102,11 +102,8 @@ struct PlayerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(Rectangle())
-            // the cover is a handle for pulling the player down (the lyrics and the queue scroll instead)
-            .modifier(HandleIf(on: mode == .cover))
             .animation(.spring(response: 0.5, dampingFraction: 0.82), value: t.uid)
-            if mode == .lyrics || mode == .queue { compactTitle(t).padding(.bottom, 10).playerHandle() }
+            if mode == .lyrics || mode == .queue { compactTitle(t).padding(.bottom, 10) }
             VStack(spacing: 0) {
                 if mode == .cover { titleRow(t).padding(.bottom, 6) }
                 infoRow(t).frame(height: 30)
@@ -116,8 +113,6 @@ struct PlayerView: View {
                 // the same breathing room as the header has from the top
                 modesBar.padding(.top, 20).padding(.bottom, 14)
             }
-            // pulled down: the controls fade first
-            .opacity(1 - min(1, pull * 3))
         }
         .padding(.horizontal, 24)
         .foregroundStyle(.primary)
@@ -338,13 +333,7 @@ struct PlayerView: View {
                 }
                 .frame(width: 82, height: 82)
                 .shadow(color: Theme.accent.opacity(0.45), radius: 18, y: 8)
-                // while it plays, soft rings of the accent keep leaving the button
-                .background {
-                    Circle().stroke(Theme.accent.opacity(0.5), lineWidth: 2)
-                        .phaseAnimator([false, true]) { c, out in
-                            c.scaleEffect(out ? 1.45 : 1).opacity(player.isPlaying ? (out ? 0 : 0.8) : 0)
-                        } animation: { out in out ? .easeOut(duration: 1.8) : .linear(duration: 0.01) }
-                }
+
             }
             .buttonStyle(.pressable)
             .sensoryFeedback(.impact(weight: .medium), trigger: player.isPlaying)
@@ -508,9 +497,3 @@ struct LikeBurst: View {
     }
 }
 
-private struct HandleIf: ViewModifier {
-    let on: Bool
-    func body(content: Content) -> some View {
-        if on { content.playerHandle() } else { content }
-    }
-}

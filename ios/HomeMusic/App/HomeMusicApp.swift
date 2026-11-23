@@ -157,11 +157,9 @@ struct MainTabs: View {
         @Bindable var app = app
         @Bindable var picker = picker
         content
-            // the full player: the app's own layer over everything, rising from the bottom
-            .overlay {
-                if app.playerOpen { PlayerContainer() }
+            .sheet(isPresented: $app.playerOpen) {
+                PlayerView()
             }
-            .animation(.spring(response: 0.5, dampingFraction: 0.9), value: app.playerOpen)
             // the library song actions of the track menus
             .sheet(item: Binding(get: { app.playerOpen ? nil : LibraryActions.shared.picking }, set: { LibraryActions.shared.picking = $0 })) {
                 PickFileSheet(target: $0)
@@ -245,8 +243,9 @@ struct NothingPlaying: View {
 /// The opening, about 2.4 s, on pure black (pure white in the light theme), all of it a function of time:
 /// 1. drops of liquid glass orbit, seen by their rims (lit on black, shaded on white) and edges splitting the light;
 /// 2. they gather into five glass bars side by side — an equalizer that dances for a moment;
-/// 3. the bars run down, melt into one another and stretch into the dock; the background lifts and the app is
-///    there, its dock where the glass landed.
+/// 3. the bars run together and melt into one drop;
+/// 4. the drop flows down and stretches into the dock; the background lifts and the app is there, its dock where
+///    the glass landed.
 struct LaunchSplash: View {
     let reveal: () -> Void
     let done: () -> Void
@@ -255,8 +254,8 @@ struct LaunchSplash: View {
     @State private var insets = UIEdgeInsets.zero
     @Environment(\.colorScheme) private var scheme
 
-    private static let total = 2.4
-    private static let revealAt = 1.72
+    private static let total = 2.75
+    private static let revealAt = 2.08
 
     var body: some View {
         GeometryReader { g in
@@ -292,13 +291,16 @@ struct LaunchSplash: View {
 
     @ViewBuilder private func frame(_ t: Double, _ size: CGSize) -> some View {
         let gather = Self.ease((t - 0.7) / 0.45)
-        let split = (t - 1.32) / 0.6
+        let merge = Self.ease((t - 1.32) / 0.34)
+        let split = (t - 1.72) / 0.6
         let black = 1 - Self.ease((t - Self.revealAt) / 0.42)
-        let fade = 1 - Self.ease((t - 2.0) / 0.38)
+        let fade = 1 - Self.ease((t - 2.36) / 0.38)
         ZStack {
             (scheme == .dark ? Color.black : Color.white).opacity(black)
-            if split <= 0 {
+            if merge <= 0 {
                 drops(t, gather: gather, size: size)
+            } else if split <= 0 {
+                oneDrop(merge, size)
             } else {
                 halves(Self.easeOutBack(split), size)
                     .opacity(fade)
@@ -314,28 +316,42 @@ struct LaunchSplash: View {
         return CGRect(x: c.x + CGFloat(i - 2) * 33 - w / 2, y: c.y - h / 2, width: w, height: h)
     }
 
-    /// The bars on their way into the dock (`k` 0 → 1, a little past and back): each takes a fifth of the dock and
-    /// they melt together on the way.
+    private static let drop: CGFloat = 120
+
+    /// The bars running together into one drop (`k` 0 → 1): they slide to the middle, round off and melt.
+    private func oneDrop(_ k: Double, _ size: CGSize) -> some View {
+        let c = CGPoint(x: size.width / 2, y: size.height / 2)
+        return glassGroup {
+            ZStack {
+                ForEach(0..<5, id: \.self) { i in
+                    let from = Self.bar(i, 1.32, c)
+                    let w = Self.lerp(from.width, Self.drop, k), h = Self.lerp(from.height, Self.drop, k)
+                    Color.clear
+                        .frame(width: max(1, w), height: max(1, h))
+                        .modifier(GlassPill())
+                        .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark).opacity(1 - 0.6 * k) }
+                        .position(x: Self.lerp(from.midX, c.x, k), y: Self.lerp(from.midY, c.y, k))
+                }
+            }
+        }
+    }
+
+    /// The drop on its way into the dock (`k` 0 → 1, a little past and back): it falls and stretches into its shape.
     private func halves(_ k: Double, _ size: CGSize) -> some View {
         let c = CGPoint(x: size.width / 2, y: size.height / 2)
         let dockW = size.width - 40, dockH: CGFloat = 62
         let dockY = size.height - (insets.bottom > 0 ? 52 : 40)
-        let seg = dockW / 5
+        // it falls first and widens late: a drop, then a dock
+        let fall = Self.easeOutBack(Self.clamp(k * 1.15))
+        let widen = Self.easeOutBack(Self.clamp((k - 0.25) / 0.75))
+        let w = Self.lerp(Self.drop, dockW, widen)
+        let h = Self.lerp(Self.drop, dockH, Self.clamp(k * 1.4))
         return glassGroup {
-            ZStack {
-                ForEach(0..<5, id: \.self) { i in
-                    // a bar leaves a moment after its left neighbour: a wave runs across
-                    let ki = Self.easeOutBack(Self.clamp(k * 1.25 - Double(i) * 0.06))
-                    let from = Self.bar(i, 1.32, c)
-                    let to = CGRect(x: c.x - dockW / 2 + seg * CGFloat(i) - 6, y: dockY - dockH / 2, width: seg + 12, height: dockH)
-                    let w = Self.lerp(from.width, to.width, ki), h = Self.lerp(from.height, to.height, ki)
-                    Color.clear
-                        .frame(width: max(1, w), height: max(1, h))
-                        .modifier(GlassPill())
-                        .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark).opacity(1 - 0.5 * ki) }
-                        .position(x: Self.lerp(from.midX, to.midX, ki), y: Self.lerp(from.midY, to.midY, ki))
-                }
-            }
+            Color.clear
+                .frame(width: max(1, w), height: max(1, h))
+                .modifier(GlassPill())
+                .overlay { GlassLight(shape: Capsule(), dark: scheme == .dark).opacity(0.4) }
+                .position(x: c.x, y: Self.lerp(c.y, dockY, fall))
         }
     }
 
