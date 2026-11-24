@@ -171,8 +171,31 @@ class Compiler:
         self.col_slots = []     # color attribute names
         self.unsupported = set()
         self.uses_alpha = False
+        self.params = []
 
     # ---------------------------------------------------------------- helpers
+    def lit(self, v, t):
+        """Material constants go to the parameter buffer MP[] instead of the code, so materials
+        that only differ in values (every Mecabricks part) share ONE compiled shader."""
+        if t == _T_SURF:
+            return "surfDefault()"
+        if isinstance(v, (list, tuple)):
+            vals = [float(x) for x in v]
+        else:
+            vals = [float(v)] * (1 if t == _T_FLOAT else 3)
+        n = {_T_FLOAT: 1, _T_VEC: 3, _T_COL: 4}[t]
+        if t == _T_COL and len(vals) == 3:
+            vals.append(1.0)
+        if len(vals) == 1 and n > 1:
+            vals = vals * 3 + [1.0]
+        vals = (vals + [0.0, 0.0, 0.0, 1.0])[:n]
+        vals = [0.0 if (math.isnan(x) or math.isinf(x)) else x for x in vals]
+        k = len(self.params)
+        self.params.extend(vals)
+        if t == _T_FLOAT:
+            return "MP[%d]" % k
+        return "%s(%s)" % (t, ", ".join("MP[%d]" % (k + i) for i in range(n)))
+
     def var(self, t, expr):
         name = "v%d" % self.n
         self.n += 1
@@ -241,7 +264,8 @@ class Compiler:
             d = _default(vs)
             if d is None:
                 return fallback if fallback is not None else _lit(0, t)
-            return _conv(_lit(d, _SOCK_TYPE.get(vs.type, _T_FLOAT)), _SOCK_TYPE.get(vs.type, _T_FLOAT), t)
+            st_ = _SOCK_TYPE.get(vs.type, _T_FLOAT)
+            return _conv(self.lit(d, st_), st_, t)
         _, node, out, st = tr
         e, et = self.output(node, out, st)
         return _conv(e, et, t)
@@ -260,7 +284,7 @@ class Compiler:
             self.unsupported.add(node.bl_idname)
             t = _SOCK_TYPE.get(out.type, _T_FLOAT)
             d = _default(out)
-            res = (_lit(d if d is not None else (0.5 if t != _T_SURF else 0), t), t)
+            res = (self.lit(d if d is not None else 0.5, t), t)
         self.memo[key] = res
         return res
 
@@ -271,9 +295,9 @@ class Compiler:
 
         # ------------------------------------------------ inputs / constants
         if t == 'RGB':
-            return _lit(_default(n.outputs[0]), C), C
+            return self.lit(_default(n.outputs[0]), C), C
         if t == 'VALUE':
-            return _lit(_default(n.outputs[0]), F), F
+            return self.lit(_default(n.outputs[0]), F), F
         if t == 'TEX_IMAGE':
             if not n.image:
                 return "float4(0.0, 0.0, 0.0, 1.0)" if oid == "Color" else "0.0", (C if oid == "Color" else F)
@@ -302,7 +326,7 @@ class Compiler:
             return "float3(%s, 0.0)" % self.uv(n.uv_map), V3
         if t == 'TEX_COORD':
             m = {"UV": "float3(%s, 0.0)" % self.uv(None), "Generated": "GEN", "Normal": "N",
-                 "Object": "Pobj", "Reflection": "reflect(-V, N)", "Camera": "float3(0.0)",
+                 "Object": "Ploc", "Reflection": "reflect(-V, N)", "Camera": "float3(0.0)",
                  "Window": "float3(0.5, 0.5, 0.0)"}
             return m.get(oid, "float3(0.0)"), V3
         if t in ('ATTRIBUTE', 'VERTEX_COLOR'):
@@ -326,8 +350,12 @@ class Compiler:
         if t == 'OBJECT_INFO':
             ob = self.obj
             col = list(ob.color) if ob else [1, 1, 1, 1]
-            m = {"Location": ("float3(0.0)", V3), "Color": (_lit(col, C), C), "Alpha": ("1.0", F),
-                 "Random": ("0.5", F)}
+            loc = list(ob.matrix_world.translation) if ob else [0, 0, 0]
+            rnd = (zlib_crc(ob.name) % 100000) / 100000.0 if ob else 0.5
+            m = {"Location": (self.lit(loc, V3), V3), "Color": (self.lit(col, C), C),
+                 "Alpha": (self.lit(col[3], F), F), "Random": (self.lit(rnd, F), F),
+                 "Object Index": (self.lit(float(getattr(ob, "pass_index", 0)) if ob else 0.0, F), F),
+                 "Material Index": (self.lit(0.0, F), F)}
             return m.get(oid, ("0.0", F))
         if t == 'LIGHT_PATH':
             return ("1.0" if oid in ("Is Camera Ray", "Ray Length") else "0.0"), F
@@ -567,19 +595,19 @@ class Compiler:
         fac = self.var(F, "saturate(%s)" % self.inp(n, "Fac", st, F))
         res = "v%d" % self.n
         self.n += 1
-        cols = [_lit(list(e.color), C) for e in els]
-        pos = [e.position for e in els]
+        cols = [self.lit(list(e.color), C) for e in els]
+        pos = [self.lit(e.position, F) for e in els]
         interp = cr.interpolation
         self.lines.append("float4 %s = %s;" % (res, cols[0]))
         for i in range(1, len(els)):
             p0, p1 = pos[i - 1], pos[i]
             if interp == 'CONSTANT':
-                self.lines.append("if (%s >= %s) { %s = %s; }" % (fac, _f(p1), res, cols[i]))
+                self.lines.append("if (%s >= %s) { %s = %s; }" % (fac, p1, res, cols[i]))
             else:
-                w = "saturate((%s - %s) / %s)" % (fac, _f(p0), _f(max(p1 - p0, 1e-6)))
+                w = "saturate((%s - %s) / max(%s - %s, 1e-6))" % (fac, p0, p1, p0)
                 if interp == 'EASE':
                     w = "smoothstep(0.0, 1.0, %s)" % w
-                self.lines.append("if (%s >= %s) { %s = mix(%s, %s, %s); }" % (fac, _f(p0), res, cols[i - 1], cols[i], w))
+                self.lines.append("if (%s >= %s) { %s = mix(%s, %s, %s); }" % (fac, p0, res, cols[i - 1], cols[i], w))
         return ("%s.a" % res, F) if oid == "Alpha" else ("float4(%s.rgb, 1.0)" % res, C)
 
     def _curve(self, n, st):
@@ -592,11 +620,9 @@ class Compiler:
         N = 33
 
         def lut(curve):
-            name = "lut%d" % self.n
-            self.n += 1
-            vals = [m.evaluate(curve, i / (N - 1)) for i in range(N)]
-            self.lines.append("const float %s[%d] = {%s};" % (name, N, ", ".join(_f(v) for v in vals)))
-            return name
+            k = len(self.params)
+            self.params.extend(float(m.evaluate(curve, i / (N - 1))) for i in range(N))
+            return "(MP + %d)" % k
 
         if n.type == 'CURVE_FLOAT':
             l = lut(m.curves[0])
@@ -635,10 +661,11 @@ class Compiler:
             L.append("%s.base = %s.rgb;" % (sv, get("Base Color", typ=C, default="float4(0.8)")))
             L.append("%s.metallic = %s;" % (sv, get("Metallic")))
             L.append("%s.roughness = %s;" % (sv, get("Roughness", default="0.5")))
-            alpha = get("Alpha", default="1.0")
-            if alpha not in ("1.0",):
+            asock = n.inputs.get("Alpha")
+            tr = _trace(asock, st) if asock is not None else None
+            if tr is not None and (tr[0] == "node" or (_default(tr[1]) is not None and _default(tr[1]) < 0.999)):
                 self.uses_alpha = True
-            L.append("%s.alpha = %s;" % (sv, alpha))
+            L.append("%s.alpha = %s;" % (sv, get("Alpha", default="1.0")))
             L.append("%s.N = %s;" % (sv, nrm("Normal")))
             L.append("%s.specular = %s;" % (sv, get("Specular IOR Level", "Specular", default="0.5")))
             L.append("%s.transmission = %s;" % (sv, get("Transmission Weight", "Transmission")))
@@ -714,20 +741,39 @@ class Compiler:
             "colorSlots": self.col_slots,
             "unsupported": sorted(self.unsupported),
             "alpha": self.uses_alpha,
+            "params": self.params,
         }
+
+
+def zlib_crc(s):
+    import zlib
+    return zlib.crc32(s.encode("utf-8"))
+
+
+def evaluated(mat):
+    """Evaluated copy (driver results applied) when available."""
+    try:
+        import bpy
+        dg = bpy.context.evaluated_depsgraph_get()
+        m = mat.evaluated_get(dg)
+        if m is not None and m.node_tree is not None:
+            return m
+    except Exception:  # noqa
+        pass
+    return mat
 
 
 def compile_material(mat, obj, paint_image, uv_names, render_uv, color_names, render_color):
     if not mat or not mat.node_tree:
         return None
-    c = Compiler(mat, obj, paint_image, uv_names, render_uv, color_names, render_color)
+    c = Compiler(evaluated(mat), obj, paint_image, uv_names, render_uv, color_names, render_color)
     try:
         return c.compile()
     except Exception as e:  # noqa
         import traceback
         traceback.print_exc()
         return {"code": "    s = surfDefault();", "textures": [], "uvSlots": [], "colorSlots": [],
-                "unsupported": ["compiler error: %s" % e]}
+                "unsupported": ["compiler error: %s" % e], "alpha": False, "params": []}
 
 
 def debug_dump(mat, obj):
@@ -758,6 +804,8 @@ def debug_dump(mat, obj):
                         props.append("%s=%s" % (attr, getattr(n, attr)))
                     except Exception:  # noqa
                         pass
+            if n.type in ('VALUE', 'RGB'):
+                props.append("value=%s" % val(n.outputs[0]))
             if n.type == 'TEX_IMAGE' and n.image:
                 props.append("image=%s cs=%s size=%s" % (n.image.name, n.image.colorspace_settings.name, tuple(n.image.size)))
             if n.type == 'VALTORGB':
@@ -779,9 +827,47 @@ def debug_dump(mat, obj):
             dump_tree(g, "group " + g.name)
 
     dump_tree(mat.node_tree, "material tree")
+    drv = []
+    for tree in [mat.node_tree] + [n.node_tree for n in _all_group_nodes(mat.node_tree)]:
+        ad = getattr(tree, "animation_data", None)
+        if ad:
+            for fc in ad.drivers:
+                drv.append("%s: %s  expr=%s vars=%s" % (tree.name, fc.data_path, fc.driver.expression,
+                                                      [(v.name, v.targets[0].data_path) for v in fc.driver.variables]))
+    out.append("## drivers")
+    out.extend(drv or ["(none)"])
+    try:
+        ev = evaluated(mat)
+        vals = []
+        for n in _all_nodes(ev.node_tree):
+            if n.type == 'VALUE':
+                vals.append("%s=%s" % (n.name, val(n.outputs[0])))
+        out.append("## evaluated Value nodes: " + ", ".join(vals))
+    except Exception as e:  # noqa
+        out.append("## evaluated: %s" % e)
     uvs = [l.name for l in obj.data.uv_layers] if obj and obj.type == 'MESH' else []
     cols = [c.name for c in obj.data.color_attributes] if obj and obj.type == 'MESH' else []
     p = compile_material(mat, obj, "", uvs, uvs[0] if uvs else "", cols, cols[0] if cols else "")
     out.append("## translated (unsupported: %s, alpha: %s)" % (p.get("unsupported"), p.get("alpha")))
     out.append(p.get("code", ""))
     return "\n".join(out)
+
+
+def _all_group_nodes(tree, seen=None):
+    seen = seen if seen is not None else set()
+    for n in tree.nodes:
+        if n.type == 'GROUP' and n.node_tree and n.node_tree.as_pointer() not in seen:
+            seen.add(n.node_tree.as_pointer())
+            yield n
+            yield from _all_group_nodes(n.node_tree, seen)
+
+
+def _all_nodes(tree, seen=None):
+    seen = seen if seen is not None else set()
+    if tree.as_pointer() in seen:
+        return
+    seen.add(tree.as_pointer())
+    for n in tree.nodes:
+        yield n
+        if n.type == 'GROUP' and n.node_tree:
+            yield from _all_nodes(n.node_tree, seen)

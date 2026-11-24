@@ -222,6 +222,7 @@ def export_mesh(obj, mat):
             "colorAttrs": col_names,
             "renderColor": render_color,
         }
+        info.update(_local_info(obj))
         return info, parts, col_blobs
     finally:
         eo.to_mesh_clear()
@@ -606,9 +607,20 @@ def export_object(obj):
                 "uvMaps": uv_names, "renderUV": render_uv, "colorAttrs": col_names, "renderColor": render_color,
                 "bmin": [float(x) for x in pos.min(axis=0)], "bmax": [float(x) for x in pos.max(axis=0)],
                 "ranges": ranges}
+        info.update(_local_info(obj))
         return info, blobs, slot_mats
     finally:
         eo.to_mesh_clear()
+
+
+def _local_info(obj):
+    """world->local matrix (row-major) and the object-local bounding box, for Object / Generated
+    texture coordinates in the translated shaders."""
+    inv = obj.matrix_world.inverted_safe()
+    bb = [list(c) for c in obj.bound_box]
+    return {"objInv": [float(inv[r][c]) for r in range(4) for c in range(4)],
+            "lbmin": [min(c[i] for c in bb) for i in range(3)],
+            "lbmax": [max(c[i] for c in bb) for i in range(3)]}
 
 
 def scene_objects(mode):

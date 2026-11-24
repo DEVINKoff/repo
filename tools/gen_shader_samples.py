@@ -165,7 +165,7 @@ for mat, paint in samples:
     print("alpha=%s" % prog.get("alpha"), end=" ")
     print("%-12s textures=%s uv=%s col=%s unsupported=%s lines=%d" % (
         mat.name, [t["image"] for t in prog["textures"]], prog["uvSlots"], prog["colorSlots"],
-        prog["unsupported"], prog["code"].count("\n") + 1))
+        prog["unsupported"], prog["code"].count("\n") + 1), "params=%d" % len(prog.get("params", [])))
     if mat.name == "mecabricks":
         print(prog["code"])
 
@@ -173,3 +173,12 @@ for mat, paint in samples:
 obj.data.materials.clear()
 obj.data.materials.append(bpy.data.materials["mecabricks"])
 print("paint target:", export.find_paint_node(bpy.data.materials["mecabricks"]).image.name)
+
+# materials that differ only in values must produce identical code (one compile on the iPad)
+m2 = bpy.data.materials["mecabricks"].copy()
+for n in m2.node_tree.nodes:
+    if n.type == 'GROUP' and len(n.inputs) > 0:
+        n.inputs[0].default_value = (0.1, 0.9, 0.2, 1)
+a = shadergen.compile_material(bpy.data.materials["mecabricks"], obj, "", UVS, "UVMap", COLS, "Col")
+b = shadergen.compile_material(m2, obj, "", UVS, "UVMap", COLS, "Col")
+print("same code for different colors:", a["code"] == b["code"], "params differ:", a["params"] != b["params"])

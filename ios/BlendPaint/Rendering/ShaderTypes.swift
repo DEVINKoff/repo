@@ -88,6 +88,7 @@ struct MeshUniforms {
     var neutral: UInt32 = 0
     var pad0: UInt32 = 0
     var pad1: UInt32 = 0
+    var objInv = matrix_identity_float4x4
 }
 
 // MARK: - math

@@ -77,6 +77,9 @@ final class MeshGPU {
     var colorNames: [String] = []
     var boundsMin = SIMD3<Float>(repeating: 0)
     var boundsMax = SIMD3<Float>(repeating: 1)
+    var localMin = SIMD3<Float>(repeating: 0)
+    var localMax = SIMD3<Float>(repeating: 1)
+    var objInv = matrix_identity_float4x4
 
     init(positions: MTLBuffer, normals: MTLBuffer, uvs: [MTLBuffer], uvNames: [String], indices: MTLBuffer,
          indexCount: Int, paintIndexCount: Int, edges: MTLBuffer?, edgeIndexCount: Int, model: simd_float4x4) {
@@ -95,8 +98,9 @@ struct DrawGeom {
     let colors: [MTLBuffer]
     let colorNames: [String]
     let indices: MTLBuffer
-    let bmin: SIMD3<Float>
+    let bmin: SIMD3<Float>       // object-local bounding box (Generated coords)
     let bmax: SIMD3<Float>
+    let objInv: simd_float4x4    // Blender world -> object local
 }
 
 /// One mesh of the scene view (Mecabricks part etc.), drawn with its own translated materials.
@@ -120,6 +124,7 @@ final class SceneGPU {
     var objects: [SceneObject] = []
     var programs: [MaterialProgram?] = []
     var pipelines: [MTLRenderPipelineState?] = []
+    var params: [MTLBuffer?] = []
     let model: simd_float4x4
     let center: SIMD3<Float>
     let scale: Float
@@ -256,7 +261,15 @@ final class Engine {
     // runtime-compiled material (translated Blender node tree)
     private var program: MaterialProgram?
     private var programPipeline: MTLRenderPipelineState?
+    private var programParams: MTLBuffer?
     private var programGeneration = 0
+    private lazy var dummyParams: MTLBuffer? = device.makeBuffer(length: 64, options: .storageModeShared)
+
+    func paramBuffer(_ p: MaterialProgram) -> MTLBuffer? {
+        guard var a = p.params, !a.isEmpty else { return dummyParams }
+        return device.makeBuffer(bytes: &a, length: a.count * 4, options: .storageModeShared)
+    }
+
     private lazy var dummyColor: MTLBuffer? = {
         var w: [Float] = [1, 1, 1, 1]
         return device.makeBuffer(bytes: &w, length: 16, options: .storageModeShared)
@@ -784,6 +797,7 @@ final class Engine {
             if let pipe {
                 self.program = p
                 self.programPipeline = pipe
+                self.programParams = self.paramBuffer(p)
                 self.requestRedraw()
             }
             done(err)
@@ -799,8 +813,10 @@ final class Engine {
 
     /// ranges: (index start, index count, neutral)
     private func drawProgram(_ enc: MTLRenderCommandEncoder, _ pipe: MTLRenderPipelineState, _ p: MaterialProgram,
-                             _ g: DrawGeom, _ ranges: [(Int, Int, Bool)], _ uIn: MeshUniforms) {
+                             _ g: DrawGeom, _ ranges: [(Int, Int, Bool)], _ uIn: MeshUniforms, params: MTLBuffer?) {
         var u = uIn
+        u.objInv = g.objInv
+        enc.setFragmentBuffer(params ?? dummyParams, offset: 0, index: 12)
         enc.setRenderPipelineState(pipe)
         enc.setDepthStencilState(meshDepth)
         enc.setCullMode(.none)
@@ -872,7 +888,8 @@ final class Engine {
 
     private func paintGeom(_ m: MeshGPU) -> DrawGeom {
         DrawGeom(positions: m.positions, normals: m.normals, uvs: m.uvs, uvNames: m.uvNames, paintUV: m.uvs[paintUV],
-                 colors: m.colors, colorNames: m.colorNames, indices: m.indices, bmin: m.boundsMin, bmax: m.boundsMax)
+                 colors: m.colors, colorNames: m.colorNames, indices: m.indices, bmin: m.localMin, bmax: m.localMax,
+                 objInv: m.objInv)
     }
 
     func encodeMesh(_ enc: MTLRenderCommandEncoder, aspect: Float) {
@@ -905,7 +922,7 @@ final class Engine {
                 for sm in o.submeshes { byProgram[sm.program, default: []].append((sm.start, sm.count, false)) }
                 for (pi, ranges) in byProgram {
                     if pi >= 0, pi < sc.programs.count, pi < sc.pipelines.count, let p = sc.programs[pi], let pipe = sc.pipelines[pi] {
-                        drawProgram(enc, pipe, p, o.geom, ranges, uo)
+                        drawProgram(enc, pipe, p, o.geom, ranges, uo, params: pi < sc.params.count ? sc.params[pi] : nil)
                     } else {
                         drawNeutral(enc, o.geom, ranges, uo)
                     }
@@ -919,7 +936,8 @@ final class Engine {
             u.params2.z = (focusName == nil || focusName == paintObjectName) ? highlight : 0
             let rest = m.indexCount - m.paintIndexCount
             if let pipe = programPipeline, let p = program {
-                drawProgram(enc, pipe, p, paintGeom(m), [(0, m.paintIndexCount, false), (m.paintIndexCount, rest, true)], u)
+                drawProgram(enc, pipe, p, paintGeom(m), [(0, m.paintIndexCount, false), (m.paintIndexCount, rest, true)], u,
+                            params: programParams)
             } else {
                 encodeSimpleMesh(enc, m, u)
             }
@@ -1001,8 +1019,10 @@ final class Engine {
         while s.programs.count <= index {
             s.programs.append(nil)
             s.pipelines.append(nil)
+            s.params.append(nil)
         }
         s.programs[index] = p
+        s.params[index] = paramBuffer(p)
         compileProgram(p) { [weak self, weak s] pipe, _ in
             guard let self, let s, self.scene === s, index < s.pipelines.count else { return }
             s.pipelines[index] = pipe

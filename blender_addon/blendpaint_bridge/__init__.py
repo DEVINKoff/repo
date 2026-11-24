@@ -253,7 +253,7 @@ def _scene_stream(names, sid):
             mat = slot_mats[slot] if slot < len(slot_mats) else None
             pi = -1
             if mat is not None and mat.node_tree is not None:
-                key = (mat.name, tuple(info["uvMaps"]), tuple(info["colorAttrs"]))
+                key = (mat.name, tuple(info["uvMaps"]), tuple(info["colorAttrs"]), o.name)
                 if key not in prog_key:
                     p = shadergen.compile_material(mat, o, "", info["uvMaps"], info["renderUV"],
                                                    info["colorAttrs"], info["renderColor"])
@@ -295,7 +295,8 @@ def _scene_stream(names, sid):
         S.server.send({"type": "scene_object", "sceneId": sid, "object": {
             "name": info["name"], "vertexCount": info["vertexCount"], "indexCount": info["indexCount"],
             "uvMaps": uv_names, "colorAttrs": col_names, "submeshes": subs,
-            "bmin": info["bmin"], "bmax": info["bmax"]}, "blobs": blobs}, b"".join(chunks))
+            "bmin": info["bmin"], "bmax": info["bmax"], "objInv": info["objInv"],
+            "lbmin": info["lbmin"], "lbmax": info["lbmax"]}, "blobs": blobs}, b"".join(chunks))
         sent += 1
         yield
     S.server.send({"type": "scene_end", "sceneId": sid, "count": sent, "materials": len(programs)})

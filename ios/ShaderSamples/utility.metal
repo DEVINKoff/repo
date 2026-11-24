@@ -33,6 +33,7 @@ struct MeshUniforms {
     uint neutral;
     uint pad0;           // bit0: col0 present, bit1: col1 present
     uint pad1;
+    float4x4 objInv;     // world -> object local (Texture Coordinate > Object)
 };
 
 struct MVOut {
@@ -322,7 +323,7 @@ static float mapRange(float v, float fmin, float fmax, float tmin, float tmax, f
     return r;
 }
 
-static float lutEval(const thread float* l, float x) {
+static float lutEval(constant float* l, float x) {
     float t = saturate(x) * 32.0;
     int i = min(int(floor(t)), 31);
     return mix(l[i], l[i + 1], t - float(i));
@@ -553,6 +554,7 @@ vertex MVOut matVertex(uint vid [[vertex_id]],
 fragment MFOut matFragment(MVOut in [[stage_in]],
                            bool front [[front_facing]],
                            constant MeshUniforms& u [[buffer(4)]],
+                           constant float* MP [[buffer(12)]],
                            array<texture2d<float>, 12> tex [[texture(0)]]) {
     MFOut o;
     o.aux = float4(in.uvA, in.viewDepth, float(u.pad1));      // w = object id
@@ -570,7 +572,9 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
 
     float3 P = in.world;
     float3 Pobj = in.objPos;
-    float3 GEN = (Pobj - u.baseColor.xyz) / max(u.emission.xyz - u.baseColor.xyz, float3(1e-6));
+    float3 Ploc = (u.objInv * float4(Pobj, 1.0)).xyz;
+    // Generated = object-local bounding box 0…1 (baseColor/emission carry the local bbox here)
+    float3 GEN = (Ploc - u.baseColor.xyz) / max(u.emission.xyz - u.baseColor.xyz, float3(1e-6));
     float2 uv0 = in.uv0, uv1 = in.uv1, uv2 = in.uv2, uv3 = in.uv3;
     float4 col0 = in.col0, col1 = in.col1;
 
@@ -579,40 +583,35 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
     Surf v0 = surfDefault();
     float v1 = dot(N, V);
     Surf v2 = surfDefault();
-    const float lut3[33] = {0.0, 0.03124999813735485, 0.0625, 0.09375, 0.125, 0.15625, 0.1875, 0.21875, 0.25, 0.28125, 0.3125, 0.34375, 0.375, 0.40625, 0.4375, 0.46875, 0.5, 0.53125, 0.5625, 0.59375, 0.625, 0.65625, 0.6875, 0.71875, 0.75, 0.78125, 0.8124999403953552, 0.84375, 0.875, 0.90625, 0.9375, 0.96875, 1.0};
-    const float lut4[33] = {0.0, 0.03124999813735485, 0.0625, 0.09375, 0.125, 0.15625, 0.1875, 0.21875, 0.25, 0.28125, 0.3125, 0.34375, 0.375, 0.40625, 0.4375, 0.46875, 0.5, 0.53125, 0.5625, 0.59375, 0.625, 0.65625, 0.6875, 0.71875, 0.75, 0.78125, 0.8124999403953552, 0.84375, 0.875, 0.90625, 0.9375, 0.96875, 1.0};
-    const float lut5[33] = {0.0, 0.03124999813735485, 0.0625, 0.09375, 0.125, 0.15625, 0.1875, 0.21875, 0.25, 0.28125, 0.3125, 0.34375, 0.375, 0.40625, 0.4375, 0.46875, 0.5, 0.53125, 0.5625, 0.59375, 0.625, 0.65625, 0.6875, 0.71875, 0.75, 0.78125, 0.8124999403953552, 0.84375, 0.875, 0.90625, 0.9375, 0.96875, 1.0};
-    const float lut6[33] = {0.0, 0.03124999813735485, 0.0625, 0.09375, 0.125, 0.15625, 0.1875, 0.21875, 0.25, 0.28125, 0.3125, 0.34375, 0.375, 0.40625, 0.4375, 0.46875, 0.5, 0.53125, 0.5625, 0.59375, 0.625, 0.65625, 0.6875, 0.71875, 0.75, 0.78125, 0.8124999403953552, 0.84375, 0.875, 0.90625, 0.9375, 0.96875, 1.0};
-    float2 v7 = layerWeight(0.5, N, V, front);
-    float v8 = saturate(v7.y);
-    float4 v9 = float4(0.0, 0.0, 0.0, 1.0);
-    if (v8 >= 0.0) { v9 = mix(float4(0.0, 0.0, 0.0, 1.0), float4(1.0, 0.0, 0.0, 1.0), saturate((v8 - 0.0) / 0.5)); }
-    if (v8 >= 0.5) { v9 = mix(float4(1.0, 0.0, 0.0, 1.0), float4(1.0, 1.0, 1.0, 1.0), saturate((v8 - 0.5) / 0.5)); }
-    float4 v10 = float4(v9.rgb, 1.0);
-    float4 v11 = float4(mix(v10.rgb, float3(lutEval(lut4, lutEval(lut3, v10.r)), lutEval(lut5, lutEval(lut3, v10.g)), lutEval(lut6, lutEval(lut3, v10.b))), 1.0), v10.a);
-    float4 v12 = hueSat(0.5, 1.0, 1.0, 1.0, v11);
-    float4 v13 = rampBlend(8, 0.5, v12, float4(col0.rgb, 1.0));
-    v2.base = v13.rgb;
-    const float lut14[33] = {0.0, 0.03124999813735485, 0.0625, 0.09375, 0.125, 0.15625, 0.1875, 0.21875, 0.25, 0.28125, 0.3125, 0.34375, 0.375, 0.40625, 0.4375, 0.46875, 0.5, 0.53125, 0.5625, 0.59375, 0.625, 0.65625, 0.6875, 0.71875, 0.75, 0.78125, 0.8124999403953552, 0.84375, 0.875, 0.90625, 0.9375, 0.96875, 1.0};
-    float v15 = safePow(col0.a, 0.5);
-    float v16 = mapRange(v15, 0.0, 1.0, 0.0, 1.0, 4.0, 2, true);
-    float v17 = mix(v16, lutEval(lut14, v16), 1.0);
-    v2.metallic = v17;
-    v2.roughness = v16;
-    v2.alpha = 1.0;
+    float2 v3 = layerWeight(MP[141], N, V, front);
+    float v4 = saturate(v3.y);
+    float4 v5 = float4(MP[142], MP[143], MP[144], MP[145]);
+    if (v4 >= MP[154]) { v5 = mix(float4(MP[142], MP[143], MP[144], MP[145]), float4(MP[146], MP[147], MP[148], MP[149]), saturate((v4 - MP[154]) / max(MP[155] - MP[154], 1e-6))); }
+    if (v4 >= MP[155]) { v5 = mix(float4(MP[146], MP[147], MP[148], MP[149]), float4(MP[150], MP[151], MP[152], MP[153]), saturate((v4 - MP[155]) / max(MP[156] - MP[155], 1e-6))); }
+    float4 v6 = float4(v5.rgb, 1.0);
+    float4 v7 = float4(mix(v6.rgb, float3(lutEval((MP + 42), lutEval((MP + 9), v6.r)), lutEval((MP + 75), lutEval((MP + 9), v6.g)), lutEval((MP + 108), lutEval((MP + 9), v6.b))), MP[157]), v6.a);
+    float4 v8 = hueSat(MP[5], MP[6], MP[7], MP[8], v7);
+    float4 v9 = rampBlend(8, MP[4], v8, float4(col0.rgb, 1.0));
+    v2.base = v9.rgb;
+    float v10 = safePow(col0.a, MP[191]);
+    float v11 = mapRange(v10, MP[193], MP[194], MP[195], MP[196], 4.0, 2, true);
+    float v12 = mix(v11, lutEval((MP + 158), v11), MP[197]);
+    v2.metallic = v12;
+    v2.roughness = v11;
+    v2.alpha = MP[198];
     v2.N = N;
-    v2.specular = 0.5;
-    v2.transmission = 0.0;
-    v2.coat = 0.0;
-    v2.coatRough = 0.029999999329447746;
+    v2.specular = MP[199];
+    v2.transmission = MP[200];
+    v2.coat = MP[201];
+    v2.coatRough = MP[202];
     v2.coatN = N;
-    v2.sss = 0.0;
-    v2.emission = float4(1.0, 1.0, 1.0, 1.0).rgb * 0.0;
-    Surf v18 = surfDefault();
-    v18.base = float4(1.0, 1.0, 1.0, 1.0).rgb;
-    v18.roughness = 0.0; v18.transmission = 1.0; v18.specular = 0.5;
-    v18.N = N;
-    v0 = surfMix(v2, v18, saturate(v1));
+    v2.sss = MP[203];
+    v2.emission = float4(MP[204], MP[205], MP[206], MP[207]).rgb * MP[208];
+    Surf v13 = surfDefault();
+    v13.base = float4(MP[209], MP[210], MP[211], MP[212]).rgb;
+    v13.roughness = MP[213]; v13.transmission = 1.0; v13.specular = 0.5;
+    v13.N = N;
+    v0 = surfMix(v2, v13, saturate(v1));
     s = v0;
     }
 

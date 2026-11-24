@@ -1,4 +1,5 @@
 import Foundation
+import simd
 import Compression
 
 // Messages exchanged with the Blender add-on (see blender_addon/blendpaint_bridge).
@@ -33,6 +34,20 @@ struct MeshInfo: Codable, Equatable {
     let renderUV: String
     let colorAttrs: [String]?
     let renderColor: String?
+    let objInv: [Float]?
+    let lbmin: [Float]?
+    let lbmax: [Float]?
+}
+
+func matrixFromRows(_ a: [Float]?) -> simd_float4x4 {
+    guard let a, a.count == 16 else { return matrix_identity_float4x4 }
+    return simd_float4x4(rows: [SIMD4(a[0], a[1], a[2], a[3]), SIMD4(a[4], a[5], a[6], a[7]),
+                                SIMD4(a[8], a[9], a[10], a[11]), SIMD4(a[12], a[13], a[14], a[15])])
+}
+
+func vec3(_ a: [Float]?, _ d: Float = 0) -> SIMD3<Float> {
+    guard let a, a.count >= 3 else { return SIMD3(repeating: d) }
+    return SIMD3(a[0], a[1], a[2])
 }
 
 struct ProgramTexture: Codable, Equatable {
@@ -49,6 +64,7 @@ struct MaterialProgram: Codable, Equatable {
     let colorSlots: [String]
     let unsupported: [String]
     let alpha: Bool?
+    let params: [Float]?
 }
 
 enum SlotValue: Codable, Equatable {
@@ -155,6 +171,9 @@ struct SceneObjectInfo: Codable {
     let submeshes: [SceneSubmesh]
     let bmin: [Float]
     let bmax: [Float]
+    let objInv: [Float]?
+    let lbmin: [Float]?
+    let lbmax: [Float]?
 }
 
 struct SceneBeginHeader: Codable {

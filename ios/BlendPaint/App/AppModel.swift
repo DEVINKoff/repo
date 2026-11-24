@@ -604,6 +604,9 @@ final class AppModel {
                                edges: edges, edgeIndexCount: s.mesh.edgeIndexCount ?? 0, model: model)
             mesh.boundsMin = mn
             mesh.boundsMax = mx
+            mesh.localMin = vec3(s.mesh.lbmin, 0)
+            mesh.localMax = vec3(s.mesh.lbmax, 1)
+            mesh.objInv = matrixFromRows(s.mesh.objInv)
             for (i, name) in (s.mesh.colorAttrs ?? []).enumerated() {
                 if let b = buffer(payload, blobs["col:\(i)"]) {
                     mesh.colors.append(b)
@@ -718,7 +721,8 @@ final class AppModel {
         func v3(_ a: [Float]) -> SIMD3<Float> { SIMD3(a.count > 0 ? a[0] : 0, a.count > 1 ? a[1] : 0, a.count > 2 ? a[2] : 0) }
         let ob = v3(o.bmin), oa = v3(o.bmax)
         let geom = DrawGeom(positions: pos, normals: nrm, uvs: uvs, uvNames: Array(o.uvMaps.prefix(uvs.count)), paintUV: uvs[0],
-                            colors: cols, colorNames: colNames, indices: idx, bmin: ob, bmax: oa)
+                            colors: cols, colorNames: colNames, indices: idx, bmin: vec3(o.lbmin, 0), bmax: vec3(o.lbmax, 1),
+                            objInv: matrixFromRows(o.objInv))
         return SceneObject(name: o.name, geom: geom, submeshes: o.submeshes, indexCount: o.indexCount,
                            center: (ob + oa) * 0.5, radius: max(simd_length(oa - ob) * 0.5, 1e-5))
     }

@@ -33,6 +33,7 @@ struct MeshUniforms {
     uint neutral;
     uint pad0;           // bit0: col0 present, bit1: col1 present
     uint pad1;
+    float4x4 objInv;     // world -> object local (Texture Coordinate > Object)
 };
 
 struct MVOut {
@@ -322,7 +323,7 @@ static float mapRange(float v, float fmin, float fmax, float tmin, float tmax, f
     return r;
 }
 
-static float lutEval(const thread float* l, float x) {
+static float lutEval(constant float* l, float x) {
     float t = saturate(x) * 32.0;
     int i = min(int(floor(t)), 31);
     return mix(l[i], l[i + 1], t - float(i));
@@ -553,6 +554,7 @@ vertex MVOut matVertex(uint vid [[vertex_id]],
 fragment MFOut matFragment(MVOut in [[stage_in]],
                            bool front [[front_facing]],
                            constant MeshUniforms& u [[buffer(4)]],
+                           constant float* MP [[buffer(12)]],
                            array<texture2d<float>, 12> tex [[texture(0)]]) {
     MFOut o;
     o.aux = float4(in.uvA, in.viewDepth, float(u.pad1));      // w = object id
@@ -570,7 +572,9 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
 
     float3 P = in.world;
     float3 Pobj = in.objPos;
-    float3 GEN = (Pobj - u.baseColor.xyz) / max(u.emission.xyz - u.baseColor.xyz, float3(1e-6));
+    float3 Ploc = (u.objInv * float4(Pobj, 1.0)).xyz;
+    // Generated = object-local bounding box 0…1 (baseColor/emission carry the local bbox here)
+    float3 GEN = (Ploc - u.baseColor.xyz) / max(u.emission.xyz - u.baseColor.xyz, float3(1e-6));
     float2 uv0 = in.uv0, uv1 = in.uv1, uv2 = in.uv2, uv3 = in.uv3;
     float4 col0 = in.col0, col1 = in.col1;
 
@@ -579,22 +583,22 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
     Surf v0 = surfDefault();
     float4 v1 = texSample(tex[0], (float3(uv0, 0.0)).xy, 0, 0);
     float4 v2 = float4(srgb2lin(v1.rgb), v1.a);
-    float4 v3 = rampBlend(0, saturate(v1.a), float4(0.3499999940395355, 0.05000000074505806, 0.6000000238418579, 1.0), float4(v2.rgb, 1.0));
+    float4 v3 = rampBlend(0, saturate(v1.a), float4(MP[0], MP[1], MP[2], MP[3]), float4(v2.rgb, 1.0));
     v0.base = v3.rgb;
-    v0.metallic = 0.0;
-    v0.roughness = 0.20000000298023224;
-    v0.alpha = 1.0;
-    float v4 = noiseFac(GEN * 5.0, 2.0, 0.5, 0.0);
+    v0.metallic = MP[4];
+    v0.roughness = MP[5];
+    v0.alpha = MP[6];
+    float v4 = noiseFac(GEN * MP[7], MP[8], MP[9], MP[10]);
     float v5 = v4;
-    float3 v6 = bumpNormal(v5, 0.10000000149011612, 0.0010000000474974513, false, N, Pobj);
+    float3 v6 = bumpNormal(v5, MP[11], MP[12], false, N, Pobj);
     v0.N = v6;
-    v0.specular = 0.5;
-    v0.transmission = 0.0;
-    v0.coat = 0.5;
-    v0.coatRough = 0.029999999329447746;
+    v0.specular = MP[13];
+    v0.transmission = MP[14];
+    v0.coat = MP[15];
+    v0.coatRough = MP[16];
     v0.coatN = N;
-    v0.sss = 0.0;
-    v0.emission = float4(1.0, 1.0, 1.0, 1.0).rgb * 0.0;
+    v0.sss = MP[17];
+    v0.emission = float4(MP[18], MP[19], MP[20], MP[21]).rgb * MP[22];
     s = v0;
     }
 

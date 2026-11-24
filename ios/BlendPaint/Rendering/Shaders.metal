@@ -88,6 +88,7 @@ struct MeshUniforms {
     uint neutral;
     uint pad0;
     uint pad1;
+    float4x4 objInv;
 };
 
 // ------------------------------------------------------------------ helpers
