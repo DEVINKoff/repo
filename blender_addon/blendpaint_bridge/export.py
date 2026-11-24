@@ -186,6 +186,29 @@ def export_mesh(obj, mat):
             uv_names.append("(no UV)")
             uv_blobs.append(np.zeros(nl * 2, np.float32).tobytes())
 
+        # color attributes (vertex colors), per corner, linear RGBA float
+        col_names, col_blobs = [], []
+        cattrs = getattr(me, "color_attributes", None)
+        if cattrs is not None:
+            for ca in list(cattrs)[:4]:
+                try:
+                    if ca.domain == 'CORNER':
+                        arr = np.empty(nl * 4, np.float32)
+                        ca.data.foreach_get("color", arr)
+                    elif ca.domain == 'POINT':
+                        av = np.empty(nv * 4, np.float32)
+                        ca.data.foreach_get("color", av)
+                        arr = av.reshape(-1, 4)[lv].ravel()
+                    else:
+                        continue
+                except Exception:  # noqa
+                    continue
+                col_names.append(ca.name)
+                col_blobs.append(arr.astype(np.float32).tobytes())
+        render_color = ""
+        if cattrs is not None:
+            render_color = getattr(cattrs, "default_color_name", "") or getattr(cattrs, "active_color_name", "") or ""
+
         parts = [pos.tobytes(), nrm.tobytes()] + uv_blobs + [edges.tobytes(), all_tris.tobytes()]
         info = {
             "name": obj.name,
@@ -196,8 +219,10 @@ def export_mesh(obj, mat):
             "uvMaps": uv_names,
             "activeUV": active_uv,
             "renderUV": render_uv,
+            "colorAttrs": col_names,
+            "renderColor": render_color,
         }
-        return info, parts
+        return info, parts, col_blobs
     finally:
         eo.to_mesh_clear()
 

@@ -17,6 +17,14 @@ jobs:
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
           xcodebuild -version
 
+      - name: Validate translated Blender materials (MSL)
+        run: |
+          set -e
+          for f in ios/ShaderSamples/*.metal; do
+            echo "== $f"
+            xcrun -sdk iphoneos metal -c "$f" -o "/tmp/$(basename "$f").air"
+          done
+
       - name: Generate Xcode project
         working-directory: ios
         run: |

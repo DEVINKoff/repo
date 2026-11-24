@@ -18,6 +18,7 @@ import numpy as np
 from bpy.app.handlers import persistent
 
 from . import export
+from . import shadergen
 from .server import BridgeServer, DEFAULT_PORT, PROTOCOL_VERSION, local_ips
 
 
@@ -126,10 +127,11 @@ def _start_session(target):
     fbuf = fbuf.reshape(h, w, 4)
     u8 = (np.clip(fbuf[::-1], 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
 
-    mesh_info, mesh_parts = export.export_mesh(obj, mat)
+    mesh_info, mesh_parts, col_blobs = export.export_mesh(obj, mat)
     desc = export.material_desc(mat, img.name)
     paint_uv = export.paint_uv_for(desc, img.name) or export._uv_for(node) or mesh_info["renderUV"] or (mesh_info["uvMaps"][0] if mesh_info["uvMaps"] else "")
-    extras = export.build_extra_blobs(export.extra_images(desc, img.name))
+    program = _compile(mat, obj, img.name, mesh_info)
+    extras = export.build_extra_blobs(_needed_images(desc, program, img.name))
 
     blobs, chunks, off = [], [], 0
 
@@ -145,6 +147,8 @@ def _start_session(target):
     add("normals", mesh_parts[1])
     for i, name in enumerate(mesh_info["uvMaps"]):
         add("uv:%d" % i, mesh_parts[2 + i])
+    for i, cb in enumerate(col_blobs):
+        add("col:%d" % i, cb)
     add("edges", mesh_parts[-2])
     add("indices", mesh_parts[-1])
     add("image", export.deflate(u8.tobytes()), compression="deflate", rawLength=w * h * 4)
@@ -154,10 +158,10 @@ def _start_session(target):
     S.session_counter += 1
     with S.lock:
         S.session = {"id": S.session_counter, "object": obj.name, "material": mat.name, "node": node.name,
-                     "image": img.name, "w": w, "h": h, "buf": fbuf, "dirty": False,
+                     "image": img.name, "w": w, "h": h, "buf": fbuf, "dirty": False, "mesh": mesh_info,
                      "last_flush": 0.0, "flush_cost": 0.0}
     S.sent_extra = set(i["name"] for i, _ in extras)
-    S.last_material_json = json.dumps(desc, sort_keys=True)
+    S.last_material_json = json.dumps([desc, program], sort_keys=True)
 
     header = {
         "type": "session",
@@ -172,12 +176,26 @@ def _start_session(target):
         "mesh": mesh_info,
         "paintUV": paint_uv,
         "materialDesc": desc,
+        "program": program,
         "textures": [i for i, _ in extras],
         "blobs": blobs,
     }
     S.server.send(header, b"".join(chunks))
     S.last_key = export.target_key(target)
     S.status = f"Sent {obj.name} / {img.name} ({w}x{h})"
+
+
+def _compile(mat, obj, image_name, mesh_info):
+    return shadergen.compile_material(mat, obj, image_name, mesh_info["uvMaps"], mesh_info["renderUV"],
+                                      mesh_info.get("colorAttrs", []), mesh_info.get("renderColor", ""))
+
+
+def _needed_images(desc, program, paint_image):
+    names = export.extra_images(desc, paint_image)
+    for t in (program or {}).get("textures", []):
+        if not t.get("paint") and t["image"] not in names:
+            names.append(t["image"])
+    return names
 
 
 def send_current(force=True):
@@ -233,11 +251,13 @@ def _send_material_update():
     if not mat:
         return
     desc = export.material_desc(mat, s["image"])
-    js = json.dumps(desc, sort_keys=True)
+    obj = bpy.data.objects.get(s["object"])
+    program = _compile(mat, obj, s["image"], s["mesh"])
+    js = json.dumps([desc, program], sort_keys=True)
     if js == S.last_material_json:
         return
     S.last_material_json = js
-    new = [n for n in export.extra_images(desc, s["image"]) if n not in S.sent_extra]
+    new = [n for n in _needed_images(desc, program, s["image"]) if n not in S.sent_extra]
     extras = export.build_extra_blobs(new)
     blobs, chunks, off = [], [], 0
     for info, data in extras:
@@ -246,7 +266,7 @@ def _send_material_update():
         chunks.append(data)
         off += len(data)
         S.sent_extra.add(info["name"])
-    S.server.send({"type": "material", "sessionId": s["id"], "materialDesc": desc,
+    S.server.send({"type": "material", "sessionId": s["id"], "materialDesc": desc, "program": program,
                    "textures": [i for i, _ in extras], "blobs": blobs}, b"".join(chunks))
 
 

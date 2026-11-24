@@ -73,6 +73,8 @@ final class MeshGPU {
     let edges: MTLBuffer?
     let edgeIndexCount: Int
     let model: simd_float4x4
+    var colors: [MTLBuffer] = []
+    var colorNames: [String] = []
 
     init(positions: MTLBuffer, normals: MTLBuffer, uvs: [MTLBuffer], uvNames: [String], indices: MTLBuffer,
          indexCount: Int, paintIndexCount: Int, edges: MTLBuffer?, edgeIndexCount: Int, model: simd_float4x4) {
@@ -193,6 +195,16 @@ final class Engine {
     private var paintImageNonColor = false
     private var extraTextures: [String: (linear: MTLTexture, srgb: MTLTexture, nonColor: Bool)] = [:]
     private var meshUniformsBase = MeshUniforms()
+    // runtime-compiled material (translated Blender node tree)
+    private var program: MaterialProgram?
+    private var programPipeline: MTLRenderPipelineState?
+    private var programGeneration = 0
+    private lazy var dummyColor: MTLBuffer? = {
+        var w: [Float] = [1, 1, 1, 1]
+        return device.makeBuffer(bytes: &w, length: 16, options: .storageModeShared)
+    }()
+    /// true when the preview uses the translated node tree
+    var usingProgram: Bool { programPipeline != nil }
     private var slotTextures: [MTLTexture] = []
     var showPaintedAsBase = true
     var lighting: LightingPreset = .studio
@@ -633,6 +645,104 @@ final class Engine {
         u.lighting = UInt32(lighting.rawValue)
     }
 
+    /// Compiles the translated material asynchronously. `done` gets nil on success or an error text.
+    func setProgram(_ p: MaterialProgram?, done: @escaping (String?) -> Void) {
+        programGeneration += 1
+        let gen = programGeneration
+        guard let p else {
+            program = nil
+            programPipeline = nil
+            requestRedraw()
+            done(nil)
+            return
+        }
+        if p == program, programPipeline != nil { done(nil); return }
+        guard let url = Bundle.main.url(forResource: "MaterialTemplate", withExtension: "txt"),
+              let template = try? String(contentsOf: url, encoding: .utf8) else {
+            done("MaterialTemplate.txt не найден в приложении")
+            return
+        }
+        let source = template.replacingOccurrences(of: "//@@MATERIAL@@", with: p.code)
+        device.makeLibrary(source: source, options: nil) { [weak self] lib, error in
+            var pipe: MTLRenderPipelineState?
+            var err: String?
+            if let lib, let s = self {
+                let d = MTLRenderPipelineDescriptor()
+                d.vertexFunction = lib.makeFunction(name: "matVertex")
+                d.fragmentFunction = lib.makeFunction(name: "matFragment")
+                d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+                d.colorAttachments[1].pixelFormat = .rgba32Float
+                d.depthAttachmentPixelFormat = .depth32Float
+                do { pipe = try s.device.makeRenderPipelineState(descriptor: d) } catch { err = error.localizedDescription }
+            } else {
+                err = error?.localizedDescription ?? "compile failed"
+            }
+            DispatchQueue.main.async {
+                guard let self, gen == self.programGeneration else { return }
+                if let pipe {
+                    self.program = p
+                    self.programPipeline = pipe
+                    self.requestRedraw()
+                    done(nil)
+                } else {
+                    print("Material compile error:\n\(err ?? "")")
+                    done(String((err ?? "").prefix(300)))
+                }
+            }
+        }
+    }
+
+    private func textureForProgram(_ t: ProgramTexture) -> MTLTexture {
+        if t.paint, let e = exportTex { return e }
+        if let e = extraTextures[t.image] { return e.linear }
+        if t.image == paintImageName, let e = exportTex { return e }
+        return whiteTexture!
+    }
+
+    private func encodeProgramMesh(_ enc: MTLRenderCommandEncoder, _ m: MeshGPU, _ pipe: MTLRenderPipelineState,
+                                   _ p: MaterialProgram, _ uIn: MeshUniforms) {
+        var u = uIn
+        enc.setRenderPipelineState(pipe)
+        enc.setDepthStencilState(meshDepth)
+        enc.setCullMode(.none)
+        enc.setVertexBuffer(m.positions, offset: 0, index: 0)
+        enc.setVertexBuffer(m.normals, offset: 0, index: 1)
+        enc.setVertexBuffer(m.uvs[paintUV], offset: 0, index: 2)
+        for i in 0..<4 {
+            var buf = m.uvs[paintUV]
+            if i < p.uvSlots.count, let k = m.uvNames.firstIndex(of: p.uvSlots[i]), k < m.uvs.count { buf = m.uvs[k] }
+            enc.setVertexBuffer(buf, offset: 0, index: 5 + i)
+        }
+        var flags: UInt32 = 0
+        for i in 0..<2 {
+            if i < p.colorSlots.count, let k = m.colorNames.firstIndex(of: p.colorSlots[i]), k < m.colors.count {
+                enc.setVertexBuffer(m.colors[k], offset: 0, index: 9 + i)
+                flags |= UInt32(1 << i)
+            } else {
+                enc.setVertexBuffer(dummyColor, offset: 0, index: 9 + i)
+            }
+        }
+        u.pad0 = flags
+        for i in 0..<12 {
+            let t = i < p.textures.count ? textureForProgram(p.textures[i]) : whiteTexture!
+            enc.setFragmentTexture(t, index: i)
+        }
+        enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+        enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+        if m.paintIndexCount > 0 {
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: m.paintIndexCount, indexType: .uint32,
+                                      indexBuffer: m.indices, indexBufferOffset: 0)
+        }
+        let rest = m.indexCount - m.paintIndexCount
+        if rest > 0 {
+            u.neutral = 1
+            enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+            enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: rest, indexType: .uint32,
+                                      indexBuffer: m.indices, indexBufferOffset: m.paintIndexCount * 4)
+        }
+    }
+
     func encodeMesh(_ enc: MTLRenderCommandEncoder, aspect: Float) {
         var u = meshUniformsBase
         let view = camera.view
@@ -650,6 +760,10 @@ final class Engine {
 
         guard let m = mesh else { return }
         u.model = m.model
+        if let pipe = programPipeline, let p = program {
+            encodeProgramMesh(enc, m, pipe, p, u)
+            return
+        }
         enc.setRenderPipelineState(meshPipeline)
         enc.setDepthStencilState(meshDepth)
         enc.setCullMode(.none)

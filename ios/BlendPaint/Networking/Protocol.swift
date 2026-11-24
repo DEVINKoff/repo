@@ -31,6 +31,23 @@ struct MeshInfo: Codable, Equatable {
     let uvMaps: [String]
     let activeUV: String
     let renderUV: String
+    let colorAttrs: [String]?
+    let renderColor: String?
+}
+
+struct ProgramTexture: Codable, Equatable {
+    let image: String
+    let paint: Bool
+    let srgb: Bool
+}
+
+/// Blender node tree translated to MSL by the add-on (blendpaint_bridge/shadergen.py)
+struct MaterialProgram: Codable, Equatable {
+    let code: String
+    let textures: [ProgramTexture]
+    let uvSlots: [String]
+    let colorSlots: [String]
+    let unsupported: [String]
 }
 
 enum SlotValue: Codable, Equatable {
@@ -117,6 +134,7 @@ struct SessionHeader: Codable {
     let mesh: MeshInfo
     let paintUV: String
     let materialDesc: MaterialDesc
+    let program: MaterialProgram?
     let textures: [TextureInfo]
     let blobs: [BlobInfo]
 }
@@ -124,6 +142,7 @@ struct SessionHeader: Codable {
 struct MaterialHeader: Codable {
     let sessionId: Int
     let materialDesc: MaterialDesc
+    let program: MaterialProgram?
     let textures: [TextureInfo]
     let blobs: [BlobInfo]
 }

@@ -62,6 +62,7 @@ struct SessionInfo: Equatable {
     let image: ImageInfo
     let uvMaps: [String]
     let materialDesc: MaterialDesc
+    var program: MaterialProgram?
     var key: String { ProjectStore.key(file: file, object: object, image: image.name) }
 }
 
@@ -79,6 +80,7 @@ struct AppSettings: Codable, Equatable {
     var paintedAsBase = true
     var sidebarOnRight = false
     var autosave = true
+    var exactShader = true
 }
 
 /// Raw input sample from a view (points / radians in view space)
@@ -245,6 +247,9 @@ final class AppModel {
         engine.occlusion = settings.occlusion
         engine.paintBackfaces = settings.paintBackfaces
         engine.facingFade = Float(settings.facingFade)
+        if engine.usingProgram != (settings.exactShader && session?.program != nil) {
+            applyProgram()
+        }
         if engine.showPaintedAsBase != settings.paintedAsBase {
             engine.showPaintedAsBase = settings.paintedAsBase
             if let s = session { engine.setMaterial(s.materialDesc, paintImage: s.image.name, paintNonColor: s.image.colorspace == "Non-Color") }
@@ -477,8 +482,9 @@ final class AppModel {
                     self.engine.addExtraTexture(name: info.name, width: info.width, height: info.height, straightRGBA: d, colorspace: info.colorspace)
                 }
                 self.session = SessionInfo(id: s.id, file: s.file, object: s.object, material: s.material, image: s.image,
-                                           uvMaps: s.uvMaps, materialDesc: m.materialDesc)
+                                           uvMaps: s.uvMaps, materialDesc: m.materialDesc, program: m.program)
                 self.engine.setMaterial(m.materialDesc, paintImage: s.image.name, paintNonColor: s.image.colorspace == "Non-Color")
+                self.applyProgram()
             }
         case "status":
             if let st = try? dec.decode(StatusHeader.self, from: hdr) {
@@ -537,12 +543,20 @@ final class AppModel {
             let mesh = MeshGPU(positions: pos, normals: nrm, uvs: uvs, uvNames: s.mesh.uvMaps, indices: idx,
                                indexCount: s.mesh.indexCount, paintIndexCount: s.mesh.paintIndexCount,
                                edges: edges, edgeIndexCount: s.mesh.edgeIndexCount ?? 0, model: model)
+            for (i, name) in (s.mesh.colorAttrs ?? []).enumerated() {
+                if let b = buffer(payload, blobs["col:\(i)"]) {
+                    mesh.colors.append(b)
+                    mesh.colorNames.append(name)
+                }
+            }
             paintUVIndex = s.mesh.uvMaps.firstIndex(of: s.paintUV) ?? 0
             engine.setMesh(mesh, paintUV: paintUVIndex)
         }
         engine.setMaterial(s.materialDesc, paintImage: s.image.name, paintNonColor: s.image.colorspace == "Non-Color")
         session = SessionInfo(id: s.sessionId, file: s.file, object: s.object, material: s.material, image: s.image,
-                              uvMaps: s.mesh.uvMaps, materialDesc: s.materialDesc)
+                              uvMaps: s.mesh.uvMaps, materialDesc: s.materialDesc, program: s.program)
+        engine.setProgram(nil) { _ in }
+        applyProgram()
         engine.camera = OrbitCamera()
         needsFit = true
         documentDirty = false
@@ -553,6 +567,32 @@ final class AppModel {
         refreshLayers()
         engine.requestRedraw()
         toast("\(s.object) • \(s.image.name) \(s.image.width)×\(s.image.height)")
+    }
+
+    @ObservationIgnored private var lastUnsupported: [String] = []
+    var shaderStatus = ""
+
+    /// Compile the Blender node tree translated by the add-on (falls back to the simple preview on error)
+    func applyProgram() {
+        guard settings.exactShader, let p = session?.program else {
+            engine.setProgram(nil) { _ in }
+            shaderStatus = ""
+            return
+        }
+        shaderStatus = "Компиляция шейдера…"
+        engine.setProgram(p) { [weak self] err in
+            guard let self else { return }
+            if let err {
+                self.shaderStatus = "Упрощённое превью"
+                self.toast("Шейдер не скомпилировался, показываю упрощённое превью: \(err)", level: "warning")
+            } else {
+                self.shaderStatus = ""
+                if !p.unsupported.isEmpty && p.unsupported != self.lastUnsupported {
+                    self.toast("Приблизительно: \(p.unsupported.prefix(4).joined(separator: ", "))", level: "warning")
+                }
+                self.lastUnsupported = p.unsupported
+            }
+        }
     }
 
     func acceptRestore() {

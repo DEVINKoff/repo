@@ -129,7 +129,8 @@ struct SettingsPanel: View {
                         Text("Смягчение по углу к камере")
                         Slider(value: $model.settings.facingFade, in: 0...0.6)
                     }
-                    Toggle("Нераспознанный шейдер → текстура как Base Color", isOn: $model.settings.paintedAsBase)
+                    Toggle("Точный шейдер из нод Blender", isOn: $model.settings.exactShader)
+                    Toggle("Упрощённое превью: текстура как Base Color, если не найдена", isOn: $model.settings.paintedAsBase)
                 }
                 Section("Синхронизация с Blender") {
                     Toggle("Обновлять во время штриха", isOn: $model.settings.liveSync)
