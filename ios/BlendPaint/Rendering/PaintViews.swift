@@ -86,10 +86,17 @@ class PaintInputView: MTKView, UIGestureRecognizerDelegate, UIPencilInteractionD
     required init(coder: NSCoder) { fatalError() }
 
     // render at the full Retina resolution (CAMetalLayer-backed views default to 1×)
+    var renderScale: CGFloat { 1 }
+
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        let scale = window?.screen.nativeScale ?? traitCollection.displayScale
-        if contentScaleFactor != scale {
+        applyScale()
+    }
+
+    func applyScale() {
+        guard window != nil else { return }
+        let scale = (window?.screen.nativeScale ?? traitCollection.displayScale) * renderScale
+        if abs(contentScaleFactor - scale) > 0.01 {
             contentScaleFactor = scale
             setNeedsLayout()
             setNeedsDisplay()
@@ -367,6 +374,7 @@ final class CanvasMTKView: PaintInputView, MTKViewDelegate {
 
 final class ModelMTKView: PaintInputView, MTKViewDelegate {
     override var kind: ViewKind { .model }
+    override var renderScale: CGFloat { CGFloat(max(0.4, min(1, model?.settings.renderScale ?? 1))) }
     private(set) var auxTexture: MTLTexture?
     private var depthTexture: MTLTexture?
 

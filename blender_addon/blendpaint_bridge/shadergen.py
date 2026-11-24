@@ -153,6 +153,7 @@ class Compiler:
         self.uv_slots = []      # uv map names
         self.col_slots = []     # color attribute names
         self.unsupported = set()
+        self.uses_alpha = False
 
     # ---------------------------------------------------------------- helpers
     def var(self, t, expr):
@@ -451,14 +452,11 @@ class Compiler:
                  'TEX_MAGIC', 'TEX_MUSGRAVE', 'TEX_BRICK'):
             vec = self.inp(n, "Vector", st, V3) if self.linked(n, "Vector", st) else "GEN"
             if t == 'TEX_NOISE':
-                key = ("noise", n.as_pointer(), tuple(x.as_pointer() for x in st))
-                if key not in self.memo:
-                    p = "%s * %s" % (vec, self.inp(n, "Scale", st, F))
-                    self.memo[key] = self.var(C, "noiseTex(%s, %s, %s, %s)" % (
-                        p, self.inp(n, "Detail", st, F), self.inp(n, "Roughness", st, F),
-                        self.inp(n, "Distortion", st, F)))
-                c = self.memo[key]
-                return ("%s.w" % c, F) if oid == "Fac" else ("float4(%s.rgb, 1.0)" % c, C)
+                args = "%s * %s, %s, %s, %s" % (vec, self.inp(n, "Scale", st, F), self.inp(n, "Detail", st, F),
+                                                self.inp(n, "Roughness", st, F), self.inp(n, "Distortion", st, F))
+                if oid == "Fac":
+                    return self.var(F, "noiseFac(%s)" % args), F
+                return self.var(C, "float4(noiseColor(%s), 1.0)" % args), C
             if t == 'TEX_CHECKER':
                 f = self.var(F, "checker(%s * %s)" % (vec, self.inp(n, "Scale", st, F)))
                 if oid == "Fac":
@@ -474,8 +472,10 @@ class Compiler:
                 return ("%s.w" % f, F) if oid == "Value" else ("float4(%s.rgb, 1.0)" % f, C)
             # voronoi/wave/magic/brick: smooth noise as a stand-in
             self.unsupported.add(n.bl_idname)
-            f = self.var(C, "noiseTex(%s * 5.0, 2.0, 0.5, 0.0)" % vec)
-            return ("%s.w" % f, F) if out.type == 'VALUE' else ("float4(%s.rgb, 1.0)" % f, C)
+            sc = self.inp(n, "Scale", st, F, "5.0") if n.inputs.get("Scale") is not None else "5.0"
+            if out.type == 'VALUE':
+                return self.var(F, "noiseFac(%s * %s, 2.0, 0.5, 0.0)" % (vec, sc)), F
+            return self.var(C, "float4(noiseColor(%s * %s, 2.0, 0.5, 0.0), 1.0)" % (vec, sc)), C
 
         # ------------------------------------------------ shaders
         if out.type == 'SHADER':
@@ -618,7 +618,10 @@ class Compiler:
             L.append("%s.base = %s.rgb;" % (sv, get("Base Color", typ=C, default="float4(0.8)")))
             L.append("%s.metallic = %s;" % (sv, get("Metallic")))
             L.append("%s.roughness = %s;" % (sv, get("Roughness", default="0.5")))
-            L.append("%s.alpha = %s;" % (sv, get("Alpha", default="1.0")))
+            alpha = get("Alpha", default="1.0")
+            if alpha not in ("1.0",):
+                self.uses_alpha = True
+            L.append("%s.alpha = %s;" % (sv, alpha))
             L.append("%s.N = %s;" % (sv, nrm("Normal")))
             L.append("%s.specular = %s;" % (sv, get("Specular IOR Level", "Specular", default="0.5")))
             L.append("%s.transmission = %s;" % (sv, get("Transmission Weight", "Transmission")))
@@ -650,6 +653,7 @@ class Compiler:
         elif t == 'BACKGROUND':
             L.append("%s.base = float3(0.0); %s.emission = %s.rgb * %s;" % (sv, sv, get("Color", typ=C), get("Strength", default="1.0")))
         elif t in ('BSDF_TRANSPARENT', 'HOLDOUT'):
+            self.uses_alpha = True
             L.append("%s.alpha = 0.0;" % sv)
         elif t == 'MIX_SHADER':
             fac = self.inp(n, "Fac", st, F)
@@ -695,6 +699,7 @@ class Compiler:
             "uvSlots": self.uv_slots,
             "colorSlots": self.col_slots,
             "unsupported": sorted(self.unsupported),
+            "alpha": self.uses_alpha,
         }
 
 

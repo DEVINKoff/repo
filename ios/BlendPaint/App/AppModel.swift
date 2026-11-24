@@ -81,6 +81,7 @@ struct AppSettings: Codable, Equatable {
     var sidebarOnRight = false
     var autosave = true
     var exactShader = true
+    var renderScale: Double = 1.0
 }
 
 /// Raw input sample from a view (points / radians in view space)
@@ -256,6 +257,7 @@ final class AppModel {
         }
         canvasView?.configureGestures()
         modelView?.configureGestures()
+        modelView?.applyScale()
         engine.requestRedraw()
     }
 
@@ -543,6 +545,8 @@ final class AppModel {
             let mesh = MeshGPU(positions: pos, normals: nrm, uvs: uvs, uvNames: s.mesh.uvMaps, indices: idx,
                                indexCount: s.mesh.indexCount, paintIndexCount: s.mesh.paintIndexCount,
                                edges: edges, edgeIndexCount: s.mesh.edgeIndexCount ?? 0, model: model)
+            mesh.boundsMin = mn
+            mesh.boundsMax = mx
             for (i, name) in (s.mesh.colorAttrs ?? []).enumerated() {
                 if let b = buffer(payload, blobs["col:\(i)"]) {
                     mesh.colors.append(b)

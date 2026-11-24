@@ -169,11 +169,17 @@ static float4 blendPremul(float4 S, float4 D, uint mode) {
     return float4(rgb, S.a + D.a * (1.0 - S.a));
 }
 
-static void markTile(float2 pixel, uint tilesX, device uint* a, device uint* b) {
+static void markTile(float2 pixel, uint tilesX, device uint* a, device uint* b, device uint* c) {
     uint2 t = uint2(pixel) / TILE_SIZE;
     uint idx = t.y * tilesX + t.x;
     a[idx] = 1;
     b[idx] = 1;
+    c[idx] = 1;
+}
+
+static bool tileFlagged(float2 pixel, uint tilesX, const device uint* f) {
+    uint2 t = uint2(pixel) / TILE_SIZE;
+    return f[t.y * tilesX + t.x] != 0;
 }
 
 // ------------------------------------------------------------------ fullscreen
@@ -228,7 +234,8 @@ fragment float4 dabFragment(DabVOut in [[stage_in]],
                             constant DabUniforms& u [[buffer(1)]],
                             texture2d<float> grain [[texture(0)]],
                             device uint* flagsA [[buffer(2)]],
-                            device uint* flagsB [[buffer(3)]]) {
+                            device uint* flagsB [[buffer(3)]],
+                            device uint* flagsC [[buffer(4)]]) {
     float a = dabCoverage(in.local, in.radius, u.hardness, u.shape, in.seed) * in.alpha;
     if (u.grainAmount > 0.0) {
         constexpr sampler gs(filter::linear, address::repeat);
@@ -239,7 +246,7 @@ fragment float4 dabFragment(DabVOut in [[stage_in]],
     if (a <= cur + 0.0005) {
         discard_fragment();
     }
-    markTile(in.position.xy, u.tilesX, flagsA, flagsB);
+    markTile(in.position.xy, u.tilesX, flagsA, flagsB, flagsC);
     return float4(cur + (a - cur) * clamp(in.flow, 0.0, 1.0));
 }
 
@@ -270,6 +277,7 @@ fragment float4 projFragment(ProjVOut in [[stage_in]],
                              constant Dab* dabs [[buffer(4)]],
                              device uint* flagsA [[buffer(5)]],
                              device uint* flagsB [[buffer(6)]],
+                             device uint* flagsC [[buffer(7)]],
                              texture2d<float> aux [[texture(0)]],
                              texture2d<float> grain [[texture(1)]]) {
     float4 clip = u.viewProj * float4(in.world, 1.0);
@@ -321,7 +329,7 @@ fragment float4 projFragment(ProjVOut in [[stage_in]],
     if (cur <= start + 0.0005) {
         discard_fragment();
     }
-    markTile(in.position.xy, u.tilesX, flagsA, flagsB);
+    markTile(in.position.xy, u.tilesX, flagsA, flagsB, flagsC);
     return float4(cur);
 }
 
@@ -345,6 +353,7 @@ kernel void dilateKernel(texture2d<float, access::read> src [[texture(0)]],
                          device uint* flagsA [[buffer(0)]],
                          device uint* flagsB [[buffer(1)]],
                          constant uint& tilesX [[buffer(2)]],
+                         device uint* flagsC [[buffer(3)]],
                          uint2 gid [[thread_position_in_grid]]) {
     uint w = src.get_width(), h = src.get_height();
     if (gid.x >= w || gid.y >= h) return;
@@ -363,7 +372,7 @@ kernel void dilateKernel(texture2d<float, access::read> src [[texture(0)]],
     }
     dst.write(float4(m), gid);
     if (m > 0.0) {
-        markTile(float2(gid), tilesX, flagsA, flagsB);
+        markTile(float2(gid), tilesX, flagsA, flagsB, flagsC);
     }
 }
 
@@ -373,7 +382,11 @@ fragment float4 compositeFragment(FSOut in [[stage_in]],
                                   float4 dst [[color(0)]],
                                   texture2d<float> layer [[texture(0)]],
                                   texture2d<float> stroke [[texture(1)]],
-                                  constant CompositeUniforms& u [[buffer(0)]]) {
+                                  constant CompositeUniforms& u [[buffer(0)]],
+                                  const device uint* tiles [[buffer(1)]]) {
+    if (u.pad0 != 0 && !tileFlagged(in.position.xy, u.pad1, tiles)) {
+        discard_fragment();
+    }
     if (u.clearPass != 0) {
         return float4(0.0);
     }
@@ -397,9 +410,12 @@ fragment float4 mergeFragment(FSOut in [[stage_in]],
 kernel void unpremultiplyKernel(texture2d<float, access::read> src [[texture(0)]],
                                 texture2d<float, access::write> dst [[texture(1)]],
                                 constant uint4& rect [[buffer(0)]],
+                                const device uint* tiles [[buffer(1)]],
+                                constant uint2& mode [[buffer(2)]],
                                 uint2 gid [[thread_position_in_grid]]) {
     if (gid.x >= rect.z || gid.y >= rect.w) return;
     uint2 p = gid + rect.xy;
+    if (mode.x != 0 && !tileFlagged(float2(p), mode.y, tiles)) return;
     float4 c = src.read(p);
     if (c.a > 0.0) {
         c.rgb = min(c.rgb / c.a, float3(1.0));

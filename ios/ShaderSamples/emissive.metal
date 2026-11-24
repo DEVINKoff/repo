@@ -1,5 +1,10 @@
+#define BP_ALPHA 1
 #include <metal_stdlib>
 using namespace metal;
+
+#ifndef BP_ALPHA
+#define BP_ALPHA 1
+#endif
 
 // Runtime-compiled material preview. The Blender add-on translates the node tree to MSL and the
 // app pastes it at the MATERIAL marker below. Keep MeshUniforms in sync with ShaderTypes.swift.
@@ -361,7 +366,10 @@ static float3 bumpNormal(float h, float strength, float dist, bool invert, float
     float det = dot(dPdx, Rx);
     float3 grad = dfdx(h) * Rx + dfdy(h) * Ry;
     float d = invert ? -dist : dist;
-    float3 nb = normalize(fabs(det) * Nin - d * sign(det) * grad + 1e-12);
+    float3 g = d * sign(det) * grad;
+    float slope = length(g) / max(fabs(det), 1e-20);
+    if (slope > 1.5) g *= 1.5 / slope;          // tame extreme per-pixel slopes
+    float3 nb = normalize(fabs(det) * Nin - g + 1e-12);
     return normalize(mix(Nin, nb, saturate(strength)));
 }
 
@@ -418,30 +426,43 @@ static float gnoise(float3 p) {
                mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
 }
 
-static float fbm(float3 p, float detail, float rough) {
+// Band-limited fBm: octaves smaller than a pixel fade to their mean (0) instead of aliasing into
+// per-pixel "white noise" — also much cheaper, since those octaves are skipped.
+static float fbm(float3 p, float detail, float rough, float fw) {
     float sum = 0.0, amp = 1.0, norm = 0.0;
-    int oct = int(clamp(detail, 0.0, 15.0));
-    for (int i = 0; i <= oct; i++) {
-        sum += gnoise(p) * amp;
-        norm += amp;
+    float d = clamp(detail, 0.0, 7.0);       // preview: at most 8 octaves
+    int oct = int(d);
+    float foot = fw;
+    for (int i = 0; i <= oct + 1; i++) {
+        float w = (i <= oct) ? 1.0 : (d - float(oct));
+        float fade = saturate(1.6 - foot * 1.6);
+        if (fade <= 0.0 || w <= 0.0) break;
+        sum += gnoise(p) * amp * fade * w;
+        norm += amp * w;
         amp *= saturate(rough);
         p *= 2.0;
-    }
-    float rmd = clamp(detail, 0.0, 15.0) - float(oct);
-    if (rmd > 0.0) {
-        float s2 = sum + gnoise(p) * amp;
-        sum = mix(sum / norm, s2 / (norm + amp), rmd);
-        return sum * 0.5 + 0.5;
+        foot *= 2.0;
     }
     return (sum / max(norm, 1e-6)) * 0.5 + 0.5;
 }
 
-static float4 noiseTex(float3 p, float detail, float rough, float distortion) {
+static float3 noiseDistort(float3 p, float distortion) {
     if (distortion != 0.0) {
         p += float3(gnoise(p + 13.5), gnoise(p + 27.1), gnoise(p + 41.7)) * distortion;
     }
-    float f = fbm(p, detail, rough);
-    return float4(f, fbm(p + float3(37.0, 17.0, 11.0), detail, rough), fbm(p + float3(-23.0, 5.0, 61.0), detail, rough), f);
+    return p;
+}
+
+static float noiseFac(float3 p, float detail, float rough, float distortion) {
+    float fw = length(fwidth(p));
+    return fbm(noiseDistort(p, distortion), detail, rough, fw);
+}
+
+static float3 noiseColor(float3 p, float detail, float rough, float distortion) {
+    float fw = length(fwidth(p));
+    float3 q = noiseDistort(p, distortion);
+    return float3(fbm(q, detail, rough, fw), fbm(q + float3(37.0, 17.0, 11.0), detail, rough, fw),
+                  fbm(q + float3(-23.0, 5.0, 61.0), detail, rough, fw));
 }
 
 static float checker(float3 p) {
@@ -549,20 +570,20 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
 
     float3 P = in.world;
     float3 Pobj = in.objPos;
-    float3 GEN = saturate(in.world * 0.5 + 0.5);
+    float3 GEN = (Pobj - u.baseColor.xyz) / max(u.emission.xyz - u.baseColor.xyz, float3(1e-6));
     float2 uv0 = in.uv0, uv1 = in.uv1, uv2 = in.uv2, uv3 = in.uv3;
     float4 col0 = in.col0, col1 = in.col1;
 
     Surf s = surfDefault();
     {
     Surf v0 = surfDefault();
-    float4 v1 = noiseTex(GEN * 5.0, 2.0, 0.5, 0.0);
+    float v1 = noiseFac(GEN * 5.0, 2.0, 0.5, 0.0);
     Surf v2 = surfDefault();
     v2.alpha = 0.0;
     Surf v3 = surfDefault();
     v3.base = float3(0.0); v3.specular = 0.0;
     v3.emission = float4(1.0, 1.0, 1.0, 1.0).rgb * 1.0;
-    v0 = surfMix(v2, v3, saturate(v1.w));
+    v0 = surfMix(v2, v3, saturate(v1));
     s = v0;
     }
 
@@ -573,10 +594,14 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
         o.color = float4(base + s.emission, 1.0);
         return o;
     }
+#if BP_ALPHA
+    // only compiled in when the material can be transparent: discard disables the GPU's
+    // hidden-surface removal, which is very expensive on LEGO/Mecabricks models (hidden studs/tubes)
     if (s.alpha < 0.999) {
         float h = hashPix(floor(in.position.xy) + fract(in.world.xy * 37.0));
         if (s.alpha < h) discard_fragment();
     }
+#endif
 
     float metallic = saturate(s.metallic);
     float roughness = clamp(s.roughness, 0.045, 1.0);
@@ -586,6 +611,11 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
     float3 f0 = mix(float3(0.08 * saturate(s.specular)), base, metallic);
     float3 diffuseColor = base * (1.0 - metallic) * (1.0 - trans);
     float a = roughness * roughness;
+    {   // specular AA (Tokuyoshi/Kaplanyan): widen the lobe where the normal varies within a pixel
+        float3 dnx = dfdx(Nn), dny = dfdy(Nn);
+        float variance = 0.25 * (dot(dnx, dnx) + dot(dny, dny));
+        a = sqrt(saturate(a * a + min(2.0 * variance, 0.2)));
+    }
     float NdV = max(dot(Nn, V), 1e-4);
     float wrap = saturate(s.sss) * 0.5;
 

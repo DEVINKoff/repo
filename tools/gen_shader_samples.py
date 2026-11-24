@@ -159,9 +159,10 @@ for mat, paint in samples:
     obj.data.materials.clear()
     obj.data.materials.append(mat)
     prog = shadergen.compile_material(mat, obj, paint, UVS, "UVMap", COLS, "Col")
-    code = TEMPLATE.replace("//@@MATERIAL@@", prog["code"])
+    code = "#define BP_ALPHA %d\n" % (1 if prog.get("alpha", True) else 0) + TEMPLATE.replace("//@@MATERIAL@@", prog["code"])
     with open(os.path.join(OUT, mat.name + ".metal"), "w") as f:
         f.write(code)
+    print("alpha=%s" % prog.get("alpha"), end=" ")
     print("%-12s textures=%s uv=%s col=%s unsupported=%s lines=%d" % (
         mat.name, [t["image"] for t in prog["textures"]], prog["uvSlots"], prog["colorSlots"],
         prog["unsupported"], prog["code"].count("\n") + 1))

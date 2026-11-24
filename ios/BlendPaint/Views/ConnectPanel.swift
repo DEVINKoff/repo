@@ -130,6 +130,14 @@ struct SettingsPanel: View {
                         Slider(value: $model.settings.facingFade, in: 0...0.6)
                     }
                     Toggle("Точный шейдер из нод Blender", isOn: $model.settings.exactShader)
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Разрешение 3D-вида")
+                            Spacer()
+                            Text("\(Int(model.settings.renderScale * 100))%").foregroundStyle(.secondary)
+                        }
+                        Slider(value: $model.settings.renderScale, in: 0.5...1, step: 0.05)
+                    }
                     Toggle("Упрощённое превью: текстура как Base Color, если не найдена", isOn: $model.settings.paintedAsBase)
                 }
                 Section("Синхронизация с Blender") {

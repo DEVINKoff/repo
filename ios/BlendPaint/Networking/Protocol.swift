@@ -48,6 +48,7 @@ struct MaterialProgram: Codable, Equatable {
     let uvSlots: [String]
     let colorSlots: [String]
     let unsupported: [String]
+    let alpha: Bool?
 }
 
 enum SlotValue: Codable, Equatable {

@@ -75,6 +75,8 @@ final class MeshGPU {
     let model: simd_float4x4
     var colors: [MTLBuffer] = []
     var colorNames: [String] = []
+    var boundsMin = SIMD3<Float>(repeating: 0)
+    var boundsMax = SIMD3<Float>(repeating: 1)
 
     init(positions: MTLBuffer, normals: MTLBuffer, uvs: [MTLBuffer], uvNames: [String], indices: MTLBuffer,
          indexCount: Int, paintIndexCount: Int, edges: MTLBuffer?, edgeIndexCount: Int, model: simd_float4x4) {
@@ -184,6 +186,8 @@ final class Engine {
     private var tilesY = 0
     private var strokeFlags: MTLBuffer?
     private var syncFlags: MTLBuffer?
+    private var compFlags: MTLBuffer?       // tiles whose composite must be rebuilt (GPU-marked)
+    private var dirtyTiles = false
     var maxLayers = 16
 
     // mesh / material
@@ -395,6 +399,9 @@ final class Engine {
         syncFlags = device.makeBuffer(length: flagBytes, options: .storageModeShared)
         if let a = strokeFlags { memset(a.contents(), 0, a.length) }
         if let b = syncFlags { memset(b.contents(), 0, b.length) }
+        compFlags = device.makeBuffer(length: flagBytes, options: .storageModeShared)
+        if let c = compFlags { memset(c.contents(), 0, c.length) }
+        dirtyTiles = false
         undoStack.removeAll(); redoStack.removeAll(); undoBytes = 0
         strokeActive = false
         let layerBytes = w * h * 4
@@ -662,7 +669,7 @@ final class Engine {
             done("MaterialTemplate.txt не найден в приложении")
             return
         }
-        let source = template.replacingOccurrences(of: "//@@MATERIAL@@", with: p.code)
+        let source = "#define BP_ALPHA \((p.alpha ?? true) ? 1 : 0)\n" + template.replacingOccurrences(of: "//@@MATERIAL@@", with: p.code)
         device.makeLibrary(source: source, options: nil) { [weak self] lib, error in
             var pipe: MTLRenderPipelineState?
             var err: String?
@@ -723,6 +730,8 @@ final class Engine {
             }
         }
         u.pad0 = flags
+        u.baseColor = SIMD4(m.boundsMin.x, m.boundsMin.y, m.boundsMin.z, 0)
+        u.emission = SIMD4(m.boundsMax.x, m.boundsMax.y, m.boundsMax.z, 0)
         for i in 0..<12 {
             let t = i < p.textures.count ? textureForProgram(p.textures[i]) : whiteTexture!
             enc.setFragmentTexture(t, index: i)
@@ -804,17 +813,27 @@ final class Engine {
         dirtyMax = pointwiseMax(dirtyMax, b)
     }
 
-    private var hasDirty: Bool { dirtyFull || (dirtyMax.x > dirtyMin.x && dirtyMax.y > dirtyMin.y) }
+    private var hasRect: Bool { dirtyMax.x > dirtyMin.x && dirtyMax.y > dirtyMin.y }
+    private var hasDirty: Bool { dirtyFull || dirtyTiles || hasRect }
 
     func encodeCompositeIfNeeded(_ cmd: MTLCommandBuffer) {
-        guard hasDocument, hasDirty, let composite, let exportTex, let stroke else { return }
+        guard hasDocument, hasDirty, let composite, let exportTex, let stroke, let cf = compFlags else { return }
         let full = dirtyFull
-        var rx = 0, ry = 0, rw = width, rh = height
-        if !full {
-            rx = dirtyMin.x; ry = dirtyMin.y
-            rw = dirtyMax.x - dirtyMin.x; rh = dirtyMax.y - dirtyMin.y
+        // regions: (x, y, w, h, tileMode)
+        var regions: [(Int, Int, Int, Int, Bool)] = []
+        if full {
+            regions.append((0, 0, width, height, false))
+        } else {
+            if hasRect {
+                regions.append((dirtyMin.x, dirtyMin.y, dirtyMax.x - dirtyMin.x, dirtyMax.y - dirtyMin.y, false))
+            }
+            if dirtyTiles {
+                regions.append((0, 0, width, height, true))
+            }
         }
+        let usedTiles = dirtyTiles
         dirtyFull = false
+        dirtyTiles = false
         dirtyMin = SIMD2(Int.max, Int.max)
         dirtyMax = SIMD2(Int.min, Int.min)
 
@@ -825,30 +844,35 @@ final class Engine {
         rp.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         guard let enc = cmd.makeRenderCommandEncoder(descriptor: rp) else { return }
         enc.setRenderPipelineState(compositePipeline)
-        enc.setScissorRect(MTLScissorRect(x: rx, y: ry, width: rw, height: rh))
         enc.setFragmentTexture(stroke, index: 1)
-        var u = CompositeUniforms()
-        if !full {
-            u.clearPass = 1
-            enc.setFragmentTexture(whiteTexture!, index: 0)
-            enc.setFragmentBytes(&u, length: MemoryLayout<CompositeUniforms>.stride, index: 0)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-            u.clearPass = 0
-        }
-        for (i, l) in layers.enumerated() where l.visible {
-            u.layerOpacity = l.opacity
-            u.blendMode = UInt32(l.blendMode.rawValue)
-            u.alphaLock = l.alphaLock ? 1 : 0
-            if strokeActive && i == activeIndex {
-                u.strokeMode = strokeMode == .erase ? 2 : 1
-                u.strokeOpacity = strokeOpacity
-                u.brushColor = strokeColor
-            } else {
-                u.strokeMode = 0
+        enc.setFragmentBuffer(cf, offset: 0, index: 1)
+        for r in regions {
+            enc.setScissorRect(MTLScissorRect(x: r.0, y: r.1, width: r.2, height: r.3))
+            var u = CompositeUniforms()
+            u.pad0 = r.4 ? 1 : 0
+            u.pad1 = UInt32(tilesX)
+            if !full {
+                u.clearPass = 1
+                enc.setFragmentTexture(whiteTexture!, index: 0)
+                enc.setFragmentBytes(&u, length: MemoryLayout<CompositeUniforms>.stride, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                u.clearPass = 0
             }
-            enc.setFragmentTexture(l.texture, index: 0)
-            enc.setFragmentBytes(&u, length: MemoryLayout<CompositeUniforms>.stride, index: 0)
-            enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            for (i, l) in layers.enumerated() where l.visible {
+                u.layerOpacity = l.opacity
+                u.blendMode = UInt32(l.blendMode.rawValue)
+                u.alphaLock = l.alphaLock ? 1 : 0
+                if strokeActive && i == activeIndex {
+                    u.strokeMode = strokeMode == .erase ? 2 : 1
+                    u.strokeOpacity = strokeOpacity
+                    u.brushColor = strokeColor
+                } else {
+                    u.strokeMode = 0
+                }
+                enc.setFragmentTexture(l.texture, index: 0)
+                enc.setFragmentBytes(&u, length: MemoryLayout<CompositeUniforms>.stride, index: 0)
+                enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+            }
         }
         enc.endEncoding()
 
@@ -856,12 +880,22 @@ final class Engine {
         ce.setComputePipelineState(unpremulPipeline)
         ce.setTexture(composite, index: 0)
         ce.setTexture(exportTex, index: 1)
-        var rect = SIMD4<UInt32>(UInt32(rx), UInt32(ry), UInt32(rw), UInt32(rh))
-        ce.setBytes(&rect, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 0)
-        ce.dispatchThreads(MTLSize(width: rw, height: rh, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        ce.setBuffer(cf, offset: 0, index: 1)
+        for r in regions {
+            var rect = SIMD4<UInt32>(UInt32(r.0), UInt32(r.1), UInt32(r.2), UInt32(r.3))
+            var mode = SIMD2<UInt32>(r.4 ? 1 : 0, UInt32(tilesX))
+            ce.setBytes(&rect, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 0)
+            ce.setBytes(&mode, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 2)
+            ce.dispatchThreads(MTLSize(width: r.2, height: r.3, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
+        }
         ce.endEncoding()
-        if exportTex.mipmapLevelCount > 1, let blit = cmd.makeBlitCommandEncoder() {
-            blit.generateMipmaps(for: exportTex)
+        if let blit = cmd.makeBlitCommandEncoder() {
+            if usedTiles || full {
+                blit.fill(buffer: cf, range: 0..<cf.length, value: 0)
+            }
+            if exportTex.mipmapLevelCount > 1 {
+                blit.generateMipmaps(for: exportTex)
+            }
             blit.endEncoding()
         }
     }
@@ -903,6 +937,7 @@ final class Engine {
         enc.setFragmentTexture(grainTexture, index: 0)
         enc.setFragmentBuffer(sf, offset: 0, index: 2)
         enc.setFragmentBuffer(yf, offset: 0, index: 3)
+        enc.setFragmentBuffer(compFlags, offset: 0, index: 4)
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: dabs.count)
         enc.endEncoding()
         cmd.commit()
@@ -930,6 +965,7 @@ final class Engine {
         enc.setFragmentTexture(grainTexture, index: 1)
         enc.setFragmentBuffer(sf, offset: 0, index: 5)
         enc.setFragmentBuffer(yf, offset: 0, index: 6)
+        enc.setFragmentBuffer(compFlags, offset: 0, index: 7)
         let chunk = 48
         var start = 0
         while start < dabs.count {
@@ -959,7 +995,7 @@ final class Engine {
         }
         enc.endEncoding()
         cmd.commit()
-        markDirtyFull()
+        dirtyTiles = true          // only the tiles the projection touched get recomposited
         requestRedraw()
     }
 
@@ -991,6 +1027,7 @@ final class Engine {
                 ce.setBuffer(sf, offset: 0, index: 0)
                 ce.setBuffer(yf, offset: 0, index: 1)
                 ce.setBytes(&tx, length: 4, index: 2)
+                ce.setBuffer(compFlags, offset: 0, index: 3)
                 ce.setTexture(uvMask, index: 1)
                 let grid = MTLSize(width: width, height: height, depth: 1)
                 let tg = MTLSize(width: 16, height: 16, depth: 1)
@@ -1052,7 +1089,7 @@ final class Engine {
 
         pushUndo(.pixels(PixelRecord(layerID: layer.id, tiles: undoTiles)))
         if strokeIs3D {
-            markDirtyFull()
+            dirtyTiles = true
         } else {
             markDirty(x0: Float(bbMin.x), y0: Float(bbMin.y), x1: Float(bbMax.x), y1: Float(bbMax.y))
         }
