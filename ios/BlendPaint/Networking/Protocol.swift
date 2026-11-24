@@ -157,13 +157,35 @@ struct SceneObjectInfo: Codable {
     let bmax: [Float]
 }
 
-struct SceneHeader: Codable {
-    let objects: [SceneObjectInfo]
-    let programs: [MaterialProgram]
-    let textures: [TextureInfo]
-    let blobs: [BlobInfo]
+struct SceneBeginHeader: Codable {
+    let sceneId: Int
+    let count: Int
     let bmin: [Float]
     let bmax: [Float]
+}
+
+struct SceneMaterialHeader: Codable {
+    let sceneId: Int
+    let index: Int
+    let program: MaterialProgram
+}
+
+struct SceneTextureHeader: Codable {
+    let sceneId: Int
+    let texture: TextureInfo
+    let rawLength: Int
+}
+
+struct SceneObjectHeader: Codable {
+    let sceneId: Int
+    let object: SceneObjectInfo
+    let blobs: [BlobInfo]
+}
+
+struct SceneEndHeader: Codable {
+    let sceneId: Int
+    let count: Int
+    let materials: Int
 }
 
 struct NoTextureHeader: Codable {

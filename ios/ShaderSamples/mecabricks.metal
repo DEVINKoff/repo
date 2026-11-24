@@ -625,7 +625,7 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
     {   // specular AA (Tokuyoshi/Kaplanyan): widen the lobe where the normal varies within a pixel
         float3 dnx = dfdx(Nn), dny = dfdy(Nn);
         float variance = 0.25 * (dot(dnx, dnx) + dot(dny, dny));
-        a = sqrt(saturate(a * a + min(2.0 * variance, 0.2)));
+        a = sqrt(saturate(a * a + min(0.5 * variance, 0.012)));   // gentle: only kills sparkle
     }
     float NdV = max(dot(Nn, V), 1e-4);
     float wrap = saturate(s.sss) * 0.5;

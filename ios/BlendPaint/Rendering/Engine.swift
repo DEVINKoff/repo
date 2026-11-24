@@ -105,7 +105,7 @@ final class SceneObject {
     let geom: DrawGeom
     let submeshes: [SceneSubmesh]
     let indexCount: Int
-    let center: SIMD3<Float>     // normalized scene space
+    let center: SIMD3<Float>     // Blender world space
     let radius: Float
 
     init(name: String, geom: DrawGeom, submeshes: [SceneSubmesh], indexCount: Int, center: SIMD3<Float>, radius: Float) {
@@ -114,17 +114,21 @@ final class SceneObject {
     }
 }
 
+/// Filled progressively while Blender streams the scene (one object per message).
 final class SceneGPU {
-    let objects: [SceneObject]
-    let programs: [MaterialProgram]
-    var pipelines: [MTLRenderPipelineState?]
+    let id: Int
+    var objects: [SceneObject] = []
+    var programs: [MaterialProgram?] = []
+    var pipelines: [MTLRenderPipelineState?] = []
     let model: simd_float4x4
+    let center: SIMD3<Float>
+    let scale: Float
 
-    init(objects: [SceneObject], programs: [MaterialProgram], model: simd_float4x4) {
-        self.objects = objects
-        self.programs = programs
-        self.pipelines = Array(repeating: nil, count: programs.count)
+    init(id: Int, model: simd_float4x4, center: SIMD3<Float>, scale: Float) {
+        self.id = id
         self.model = model
+        self.center = center
+        self.scale = scale
     }
 }
 
@@ -900,8 +904,8 @@ final class Engine {
                 var byProgram: [Int: [(Int, Int, Bool)]] = [:]
                 for sm in o.submeshes { byProgram[sm.program, default: []].append((sm.start, sm.count, false)) }
                 for (pi, ranges) in byProgram {
-                    if pi >= 0, pi < sc.programs.count, let pipe = sc.pipelines[pi] {
-                        drawProgram(enc, pipe, sc.programs[pi], o.geom, ranges, uo)
+                    if pi >= 0, pi < sc.programs.count, pi < sc.pipelines.count, let p = sc.programs[pi], let pipe = sc.pipelines[pi] {
+                        drawProgram(enc, pipe, p, o.geom, ranges, uo)
                     } else {
                         drawNeutral(enc, o.geom, ranges, uo)
                     }
@@ -966,38 +970,50 @@ final class Engine {
     private var link: CADisplayLink?
     private var linkProxy: DisplayLinkProxy?
 
-    var sceneVisible: Bool {
-        guard let sc = scene else { return false }
-        return mesh == nil || sc.objects.contains { $0.name == paintObjectName }
-    }
+    /// everything is in Blender world space, so the paint mesh always fits into the scene
+    var sceneVisible: Bool { scene != nil }
+
+    private let paintOnlyID = 65535
 
     var paintObjectID: Int {
         if let sc = scene, let i = sc.objects.firstIndex(where: { $0.name == paintObjectName }) { return i + 1 }
-        return 1
+        return paintOnlyID
     }
 
     func objectName(forID id: Int) -> String? {
         guard id > 0 else { return nil }
-        if let sc = scene, sceneVisible { return id - 1 < sc.objects.count ? sc.objects[id - 1].name : nil }
+        if id == paintOnlyID { return mesh != nil ? paintObjectName : nil }
+        if let sc = scene, id - 1 < sc.objects.count { return sc.objects[id - 1].name }
         return mesh != nil ? paintObjectName : nil
     }
 
-    func setScene(_ s: SceneGPU?, onCompiled: @escaping (Int, Int) -> Void) {
+    func beginScene(_ s: SceneGPU?) {
         scene = s
         focusName = nil
         focusAmount = 0
-        guard let s else { requestRedraw(); return }
-        var done = 0
-        let total = s.programs.count
-        for (i, p) in s.programs.enumerated() {
-            compileProgram(p) { [weak self, weak s] pipe, _ in
-                guard let self, let s, self.scene === s else { return }
-                s.pipelines[i] = pipe
-                done += 1
-                onCompiled(done, total)
-                self.requestRedraw()
-            }
+        if let s, let m = mesh { m.model = s.model }
+        requestRedraw()
+    }
+
+    /// compiles asynchronously; `done(ok)` on main
+    func addSceneProgram(index: Int, program p: MaterialProgram, done: @escaping (Bool) -> Void) {
+        guard let s = scene else { return }
+        while s.programs.count <= index {
+            s.programs.append(nil)
+            s.pipelines.append(nil)
         }
+        s.programs[index] = p
+        compileProgram(p) { [weak self, weak s] pipe, _ in
+            guard let self, let s, self.scene === s, index < s.pipelines.count else { return }
+            s.pipelines[index] = pipe
+            done(pipe != nil)
+            self.requestRedraw()
+        }
+    }
+
+    func addSceneObject(_ o: SceneObject) {
+        guard let s = scene else { return }
+        s.objects.append(o)
         requestRedraw()
     }
 
@@ -1018,8 +1034,8 @@ final class Engine {
     func cameraFor(objectNamed name: String?) -> OrbitCamera {
         var c = camera
         if let name, let sc = scene, let o = sc.objects.first(where: { $0.name == name }) {
-            c.target = o.center
-            c.distance = max(o.radius * 2.6, 0.05)
+            c.target = (o.center - sc.center) * sc.scale
+            c.distance = max(o.radius * sc.scale * 2.6, 0.03)
         } else if let name, name == paintObjectName, let m = mesh {
             let ctr = (m.boundsMin + m.boundsMax) * 0.5
             let p = m.model * SIMD4(ctr.x, ctr.y, ctr.z, 1)

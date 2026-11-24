@@ -728,3 +728,60 @@ def compile_material(mat, obj, paint_image, uv_names, render_uv, color_names, re
         traceback.print_exc()
         return {"code": "    s = surfDefault();", "textures": [], "uvSlots": [], "colorSlots": [],
                 "unsupported": ["compiler error: %s" % e]}
+
+
+def debug_dump(mat, obj):
+    """Readable dump of a material's node graph (including every node group) + translated MSL."""
+    out = ["# BlendPaint material debug", "material: %s" % mat.name, ""]
+    seen = set()
+
+    def val(sock):
+        v = _default(sock)
+        if isinstance(v, list):
+            return "(" + ", ".join("%.4g" % x for x in v) + ")"
+        return "%.4g" % v if isinstance(v, float) else str(v)
+
+    def dump_tree(tree, title):
+        if tree.as_pointer() in seen:
+            return
+        seen.add(tree.as_pointer())
+        out.append("## %s" % title)
+        groups = []
+        for n in tree.nodes:
+            props = []
+            for attr in ("blend_type", "data_type", "operation", "interpolation_type", "space", "uv_map",
+                         "attribute_name", "layer_name", "target", "mode", "vector_type", "clamp_type",
+                         "gradient_type", "noise_dimensions", "interpolation", "extension", "invert",
+                         "use_clamp", "clamp_factor", "clamp_result", "factor_mode", "is_active_output"):
+                if hasattr(n, attr):
+                    try:
+                        props.append("%s=%s" % (attr, getattr(n, attr)))
+                    except Exception:  # noqa
+                        pass
+            if n.type == 'TEX_IMAGE' and n.image:
+                props.append("image=%s cs=%s size=%s" % (n.image.name, n.image.colorspace_settings.name, tuple(n.image.size)))
+            if n.type == 'VALTORGB':
+                props.append("ramp=" + "; ".join("%.3f:%s" % (e.position, tuple(round(c, 3) for c in e.color))
+                                                 for e in n.color_ramp.elements))
+            out.append("- [%s] %s %s%s" % (n.name, n.bl_idname, " ".join(props), " (muted)" if n.mute else ""))
+            for s in n.inputs:
+                if not s.enabled:
+                    continue
+                if s.is_linked:
+                    l = s.links[0]
+                    out.append("    in %s <- %s.%s" % (s.identifier, l.from_node.name, l.from_socket.identifier))
+                elif s.type != 'SHADER':
+                    out.append("    in %s = %s" % (s.identifier, val(s)))
+            if n.type == 'GROUP' and n.node_tree:
+                groups.append(n.node_tree)
+        out.append("")
+        for g in groups:
+            dump_tree(g, "group " + g.name)
+
+    dump_tree(mat.node_tree, "material tree")
+    uvs = [l.name for l in obj.data.uv_layers] if obj and obj.type == 'MESH' else []
+    cols = [c.name for c in obj.data.color_attributes] if obj and obj.type == 'MESH' else []
+    p = compile_material(mat, obj, "", uvs, uvs[0] if uvs else "", cols, cols[0] if cols else "")
+    out.append("## translated (unsupported: %s, alpha: %s)" % (p.get("unsupported"), p.get("alpha")))
+    out.append(p.get("code", ""))
+    return "\n".join(out)

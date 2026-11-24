@@ -490,19 +490,51 @@ final class AppModel {
                 self.engine.setMaterial(m.materialDesc, paintImage: s.image.name, paintNonColor: s.image.colorspace == "Non-Color")
                 self.applyProgram()
             }
-        case "scene":
-            guard let sc = try? dec.decode(SceneHeader.self, from: hdr) else {
-                DispatchQueue.main.async { self.toast("Не удалось разобрать сцену", level: "error") }
-                return
+        case "scene_begin":
+            if let h = try? dec.decode(SceneBeginHeader.self, from: hdr) {
+                DispatchQueue.main.async { self.beginScene(h) }
             }
-            var textures: [(TextureInfo, Data)] = []
-            for b in sc.blobs where b.id.hasPrefix("tex:") {
-                if let info = sc.textures.first(where: { "tex:" + $0.name == b.id }),
-                   let d = Deflate.decompress(payload.blob(b), rawLength: b.rawLength ?? 0) {
-                    textures.append((info, d))
+        case "scene_material":
+            if let h = try? dec.decode(SceneMaterialHeader.self, from: hdr) {
+                DispatchQueue.main.async {
+                    guard self.engine.scene?.id == h.sceneId else { return }
+                    self.sceneMaterials += 1
+                    self.engine.addSceneProgram(index: h.index, program: h.program) { [weak self] _ in
+                        guard let self else { return }
+                        self.sceneMaterialsReady += 1
+                        self.updateSceneStatus()
+                    }
+                    self.updateSceneStatus()
                 }
             }
-            DispatchQueue.main.async { self.applyScene(sc, payload: payload, textures: textures) }
+        case "scene_texture":
+            if let h = try? dec.decode(SceneTextureHeader.self, from: hdr),
+               let d = Deflate.decompress(payload, rawLength: h.rawLength) {
+                DispatchQueue.main.async {
+                    guard self.engine.scene?.id == h.sceneId else { return }
+                    self.engine.addExtraTexture(name: h.texture.name, width: h.texture.width, height: h.texture.height,
+                                                straightRGBA: d, colorspace: h.texture.colorspace)
+                }
+            }
+        case "scene_object":
+            guard let h = try? dec.decode(SceneObjectHeader.self, from: hdr) else { return }
+            // GPU buffers are created here on the network queue so the UI stays smooth
+            let obj = makeSceneObject(h, payload: payload)
+            DispatchQueue.main.async {
+                guard let obj, let sc = self.engine.scene, sc.id == h.sceneId else { return }
+                self.engine.addSceneObject(obj)
+                self.sceneObjects.append(obj.name)
+                self.updateSceneStatus()
+            }
+        case "scene_end":
+            if let h = try? dec.decode(SceneEndHeader.self, from: hdr) {
+                DispatchQueue.main.async {
+                    guard self.engine.scene?.id == h.sceneId else { return }
+                    self.sceneLoading = false
+                    self.updateSceneStatus()
+                    if h.count > 1 { self.toast("Сцена: \(h.count) объектов — тапни деталь, чтобы рисовать на ней") }
+                }
+            }
         case "no_texture":
             if let n = try? dec.decode(NoTextureHeader.self, from: hdr) {
                 DispatchQueue.main.async {
@@ -563,8 +595,8 @@ final class AppModel {
             }
             r = max(r, 1e-4)
             var model = simd_float4x4.scale(1 / r) * simd_float4x4.translation(-center)
-            if let sc = engine.scene, sc.objects.contains(where: { $0.name == s.object }) {
-                model = sc.model          // same space as the rest of the scene
+            if let sc = engine.scene {
+                model = sc.model          // same (Blender world) space as the rest of the scene
             }
             let edges = buffer(payload, blobs["edges"])
             let mesh = MeshGPU(positions: pos, normals: nrm, uvs: uvs, uvNames: s.mesh.uvMaps, indices: idx,
@@ -637,51 +669,58 @@ final class AppModel {
     var noTextureObject: String?
     var sceneStatus = ""
 
-    private func applyScene(_ sc: SceneHeader, payload: Data, textures: [(TextureInfo, Data)]) {
-        let blobs = Dictionary(sc.blobs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        for (info, d) in textures {
-            engine.addExtraTexture(name: info.name, width: info.width, height: info.height, straightRGBA: d, colorspace: info.colorspace)
-        }
+    @ObservationIgnored private var sceneMaterials = 0
+    @ObservationIgnored private var sceneMaterialsReady = 0
+    @ObservationIgnored private var sceneExpected = 0
+    @ObservationIgnored private var sceneLoading = false
+
+    private func updateSceneStatus() {
+        var parts: [String] = []
+        if sceneLoading { parts.append("Детали \(sceneObjects.count)/\(sceneExpected)") }
+        if sceneMaterialsReady < sceneMaterials { parts.append("материалы \(sceneMaterialsReady)/\(sceneMaterials)") }
+        sceneStatus = parts.joined(separator: " · ")
+    }
+
+    private func beginScene(_ h: SceneBeginHeader) {
         func v3(_ a: [Float]) -> SIMD3<Float> { SIMD3(a.count > 0 ? a[0] : 0, a.count > 1 ? a[1] : 0, a.count > 2 ? a[2] : 0) }
-        let bmin = v3(sc.bmin), bmax = v3(sc.bmax)
+        let bmin = v3(h.bmin), bmax = v3(h.bmax)
         let center = (bmin + bmax) * 0.5
         let radius = max(simd_length(bmax - bmin) * 0.5, 1e-4)
         let scale = 1 / radius
         let model = simd_float4x4.scale(scale) * simd_float4x4.translation(-center)
-        var objects: [SceneObject] = []
-        for (k, o) in sc.objects.enumerated() {
-            guard let pos = buffer(payload, blobs["o\(k):pos"]), let nrm = buffer(payload, blobs["o\(k):nrm"]),
-                  let idx = buffer(payload, blobs["o\(k):idx"]) else { continue }
-            var uvs: [MTLBuffer] = []
-            for i in 0..<o.uvMaps.count { if let b = buffer(payload, blobs["o\(k):uv\(i)"]) { uvs.append(b) } }
-            guard let firstUV = uvs.first else { continue }
-            var cols: [MTLBuffer] = []
-            var colNames: [String] = []
-            for (i, n) in o.colorAttrs.enumerated() {
-                if let b = buffer(payload, blobs["o\(k):col\(i)"]) { cols.append(b); colNames.append(n) }
-            }
-            let ob = v3(o.bmin), oa = v3(o.bmax)
-            let geom = DrawGeom(positions: pos, normals: nrm, uvs: uvs, uvNames: Array(o.uvMaps.prefix(uvs.count)), paintUV: firstUV,
-                                colors: cols, colorNames: colNames, indices: idx, bmin: ob, bmax: oa)
-            objects.append(SceneObject(name: o.name, geom: geom, submeshes: o.submeshes, indexCount: o.indexCount,
-                                       center: ((ob + oa) * 0.5 - center) * scale,
-                                       radius: max(simd_length(oa - ob) * 0.5 * scale, 0.01)))
-        }
-        let gpu = SceneGPU(objects: objects, programs: sc.programs, model: model)
-        sceneStatus = sc.programs.isEmpty ? "" : "Материалы 0/\(sc.programs.count)"
-        engine.setScene(gpu) { [weak self] done, total in
-            self?.sceneStatus = done >= total ? "" : "Материалы \(done)/\(total)"
-        }
-        if let m = engine.mesh, objects.contains(where: { $0.name == engine.paintObjectName }) {
-            m.model = model
-            engine.requestRedraw()
-        }
+        engine.beginScene(SceneGPU(id: h.sceneId, model: model, center: center, scale: scale))
+        sceneMaterials = 0
+        sceneMaterialsReady = 0
+        sceneExpected = h.count
+        sceneLoading = true
         withAnimation(.spring(duration: 0.4)) {
-            sceneObjects = objects.map(\.name)
+            sceneObjects = []
             focusName = nil
         }
+        updateSceneStatus()
         engine.animateCamera(to: OrbitCamera(), focus: 0, duration: 0.6)
-        if objects.count > 1 { toast("Сцена: \(objects.count) объектов — тапни деталь, чтобы рисовать на ней") }
+    }
+
+    /// network queue
+    private func makeSceneObject(_ h: SceneObjectHeader, payload: Data) -> SceneObject? {
+        let o = h.object
+        let blobs = Dictionary(h.blobs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        guard let pos = buffer(payload, blobs["pos"]), let nrm = buffer(payload, blobs["nrm"]),
+              let idx = buffer(payload, blobs["idx"]) else { return nil }
+        var uvs: [MTLBuffer] = []
+        for i in 0..<o.uvMaps.count { if let b = buffer(payload, blobs["uv\(i)"]) { uvs.append(b) } }
+        if uvs.isEmpty, let z = engine.device.makeBuffer(length: max(8, o.vertexCount * 8), options: .storageModeShared) { uvs.append(z) }
+        var cols: [MTLBuffer] = []
+        var colNames: [String] = []
+        for (i, n) in o.colorAttrs.enumerated() {
+            if let b = buffer(payload, blobs["col\(i)"]) { cols.append(b); colNames.append(n) }
+        }
+        func v3(_ a: [Float]) -> SIMD3<Float> { SIMD3(a.count > 0 ? a[0] : 0, a.count > 1 ? a[1] : 0, a.count > 2 ? a[2] : 0) }
+        let ob = v3(o.bmin), oa = v3(o.bmax)
+        let geom = DrawGeom(positions: pos, normals: nrm, uvs: uvs, uvNames: Array(o.uvMaps.prefix(uvs.count)), paintUV: uvs[0],
+                            colors: cols, colorNames: colNames, indices: idx, bmin: ob, bmax: oa)
+        return SceneObject(name: o.name, geom: geom, submeshes: o.submeshes, indexCount: o.indexCount,
+                           center: (ob + oa) * 0.5, radius: max(simd_length(oa - ob) * 0.5, 1e-5))
     }
 
     func requestScene() { client.send(["type": "request_scene"]) }

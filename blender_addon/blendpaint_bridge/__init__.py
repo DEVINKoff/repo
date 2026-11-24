@@ -27,6 +27,8 @@ class _State:
     inbox = queue.Queue()
     session = None            # dict, see _start_session
     session_counter = 0
+    scene_counter = 0
+    scene_job = None
     last_key = None
     last_follow_check = 0.0
     material_dirty_at = 0.0
@@ -199,41 +201,54 @@ def _needed_images(desc, program, paint_image):
 
 
 def send_scene():
-    """All meshes (visible / selected / collection) with their translated materials, for the
-    iPad's scene view where a part is picked by tapping it."""
+    """Starts streaming all meshes (visible / selected / collection) to the iPad, one object per
+    message, so neither side has to hold one giant payload. Runs incrementally in the pump."""
     if not S.server or not S.server.connected:
         return False
+    import mathutils
     props = _wm_props()
     objs = export.scene_objects(props.scene_source)
-    programs, prog_key = [], {}
-    objects, chunks, blobs, off = [], [], [], 0
-    images = []
-    total_loops = 0
-
-    def add(bid, data, **extra):
-        nonlocal off
-        d = {"id": bid, "offset": off, "length": len(data)}
-        d.update(extra)
-        blobs.append(d)
-        chunks.append(data)
-        off += len(data)
-
+    if not objs:
+        return False
     bmin, bmax = [1e30] * 3, [-1e30] * 3
     for o in objs:
+        for c in o.bound_box:
+            w = o.matrix_world @ mathutils.Vector(c)
+            bmin = [min(a, b) for a, b in zip(bmin, w)]
+            bmax = [max(a, b) for a, b in zip(bmax, w)]
+    S.scene_counter += 1
+    sid = S.scene_counter
+    S.server.send({"type": "scene_begin", "sceneId": sid, "count": len(objs), "bmin": bmin, "bmax": bmax})
+    S.scene_job = _scene_stream([o.name for o in objs], sid)
+    S.status = "Sending scene: %d objects" % len(objs)
+    return True
+
+
+def _scene_stream(names, sid):
+    programs = []           # json strings, index = program id on the iPad
+    prog_key = {}
+    sent_tex = set()
+    total = 0
+    sent = 0
+    for name in names:
+        o = bpy.data.objects.get(name)
+        if o is None or o.type != 'MESH':
+            continue
         try:
             r = export.export_object(o)
         except Exception as e:  # noqa
-            print("BlendPaint: scene skip", o.name, e)
-            continue
+            print("BlendPaint: scene skip", name, e)
+            r = None
         if not r:
+            yield
             continue
         info, ob_blobs, slot_mats = r
-        total_loops += info["vertexCount"]
-        if total_loops > 6_000_000:
-            S.server.send({"type": "status", "level": "warning", "message": "Сцена слишком большая, отправлена часть объектов"})
+        total += info["vertexCount"]
+        if total > 12_000_000:
+            S.server.send({"type": "status", "level": "warning",
+                           "message": "Сцена слишком большая — отправлена часть объектов"})
             break
-        k = len(objects)
-        subs = []
+        subs, used_uv, used_col = [], {info["renderUV"]}, set()
         for slot, start, count in info["ranges"]:
             mat = slot_mats[slot] if slot < len(slot_mats) else None
             pi = -1
@@ -242,34 +257,68 @@ def send_scene():
                 if key not in prog_key:
                     p = shadergen.compile_material(mat, o, "", info["uvMaps"], info["renderUV"],
                                                    info["colorAttrs"], info["renderColor"])
-                    code_key = json.dumps(p, sort_keys=True)
-                    found = next((i for i, q in enumerate(programs) if json.dumps(q, sort_keys=True) == code_key), -1)
-                    if found < 0:
-                        programs.append(p)
-                        found = len(programs) - 1
-                        for t in p.get("textures", []):
-                            if t["image"] not in images:
-                                images.append(t["image"])
-                    prog_key[key] = found
+                    js = json.dumps(p, sort_keys=True)
+                    if js not in programs:
+                        programs.append(js)
+                        new_tex = [t["image"] for t in p.get("textures", []) if t["image"] not in sent_tex]
+                        for tinfo, data in export.build_extra_blobs(new_tex, 1024):
+                            S.server.send({"type": "scene_texture", "sceneId": sid, "texture": tinfo,
+                                           "compression": "deflate",
+                                           "rawLength": tinfo["width"] * tinfo["height"] * 4}, data)
+                        sent_tex.update(new_tex)
+                        S.server.send({"type": "scene_material", "sceneId": sid, "index": len(programs) - 1,
+                                       "program": p})
+                    prog_key[key] = programs.index(js)
                 pi = prog_key[key]
+                p = json.loads(programs[pi])
+                used_uv.update(p.get("uvSlots", []))
+                used_col.update(p.get("colorSlots", []))
             subs.append({"program": pi, "start": start, "count": count})
-        for name, data in ob_blobs.items():
-            add("o%d:%s" % (k, name), data)
-        bmin = [min(a, b) for a, b in zip(bmin, info["bmin"])]
-        bmax = [max(a, b) for a, b in zip(bmax, info["bmax"])]
-        objects.append({"name": o.name, "vertexCount": info["vertexCount"], "indexCount": info["indexCount"],
-                        "uvMaps": info["uvMaps"], "colorAttrs": info["colorAttrs"], "submeshes": subs,
-                        "bmin": info["bmin"], "bmax": info["bmax"]})
-    textures = []
-    for info, data in export.build_extra_blobs(images, 1024):
-        add("tex:" + info["name"], data, compression="deflate", rawLength=info["width"] * info["height"] * 4)
-        textures.append(info)
-    if not objects:
-        return False
-    S.server.send({"type": "scene", "objects": objects, "programs": programs, "textures": textures,
-                   "blobs": blobs, "bmin": bmin, "bmax": bmax}, b"".join(chunks))
-    S.status = "Scene: %d objects, %d materials" % (len(objects), len(programs))
-    return True
+        # only the UV maps / color attributes the materials actually read
+        uv_names = [n for n in info["uvMaps"] if n in used_uv] or info["uvMaps"][:1]
+        col_names = [n for n in info["colorAttrs"] if n in used_col]
+        blobs, chunks, off = [], [], 0
+
+        def add(bid, data):
+            nonlocal off
+            blobs.append({"id": bid, "offset": off, "length": len(data)})
+            chunks.append(data)
+            off += len(data)
+
+        add("pos", ob_blobs["pos"])
+        add("nrm", ob_blobs["nrm"])
+        add("idx", ob_blobs["idx"])
+        for i, n in enumerate(uv_names):
+            add("uv%d" % i, ob_blobs["uv%d" % info["uvMaps"].index(n)])
+        for i, n in enumerate(col_names):
+            add("col%d" % i, ob_blobs["col%d" % info["colorAttrs"].index(n)])
+        S.server.send({"type": "scene_object", "sceneId": sid, "object": {
+            "name": info["name"], "vertexCount": info["vertexCount"], "indexCount": info["indexCount"],
+            "uvMaps": uv_names, "colorAttrs": col_names, "submeshes": subs,
+            "bmin": info["bmin"], "bmax": info["bmax"]}, "blobs": blobs}, b"".join(chunks))
+        sent += 1
+        yield
+    S.server.send({"type": "scene_end", "sceneId": sid, "count": sent, "materials": len(programs)})
+    S.status = "Scene sent: %d objects, %d materials" % (sent, len(programs))
+
+
+def _run_scene_job():
+    job = S.scene_job
+    if job is None or not S.server or not S.server.connected:
+        S.scene_job = None
+        return
+    c = S.server.client
+    if c is not None and c.bytes_pending > 48 * 1024 * 1024:
+        return              # let the network catch up
+    t0 = time.perf_counter()
+    try:
+        while time.perf_counter() - t0 < 0.03:
+            next(job)
+    except StopIteration:
+        S.scene_job = None
+    except Exception as e:  # noqa
+        print("BlendPaint scene job error:", e)
+        S.scene_job = None
 
 
 def _select_object(name):
@@ -430,6 +479,7 @@ def _pump():
                 S.status = "iPad connected"
                 S.last_key = None
                 S.session = None
+                S.scene_job = None
                 _tag_redraw()
             elif t == "hello":
                 S.client_name = header.get("client", "iPad")
@@ -454,6 +504,8 @@ def _pump():
         _flush()
     except Exception as e:  # noqa
         print("BlendPaint flush error:", e)
+    if S.scene_job is not None:
+        _run_scene_job()
 
     now = time.time()
     if S.server.connected:
@@ -469,7 +521,7 @@ def _pump():
                 _send_material_update()
             except Exception as e:  # noqa
                 print("BlendPaint material update error:", e)
-    return 0.016 if (S.session and S.session["dirty"]) else 0.03
+    return 0.016 if ((S.session and S.session["dirty"]) or S.scene_job is not None) else 0.03
 
 
 @persistent
@@ -574,6 +626,29 @@ class BLENDPAINT_OT_send_scene(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class BLENDPAINT_OT_debug_material(bpy.types.Operator):
+    bl_idname = "blendpaint.debug_material"
+    bl_label = "Copy Material Debug"
+    bl_description = ("Copy the active material's node tree (all groups, links and values) plus the "
+                      "translated iPad shader to the clipboard, to report preview differences")
+
+    @classmethod
+    def poll(cls, context):
+        o = context.active_object
+        return o is not None and o.active_material is not None
+
+    def execute(self, context):
+        obj = context.active_object
+        mat = obj.active_material
+        text = shadergen.debug_dump(mat, obj)
+        context.window_manager.clipboard = text
+        t = bpy.data.texts.get("BlendPaint_debug") or bpy.data.texts.new("BlendPaint_debug")
+        t.clear()
+        t.write(text)
+        self.report({'INFO'}, "Material debug copied to clipboard (%d KB)" % (len(text) // 1024 + 1))
+        return {'FINISHED'}
+
+
 class BLENDPAINT_OT_new_texture(bpy.types.Operator):
     bl_idname = "blendpaint.new_texture"
     bl_label = "New Paint Texture"
@@ -667,6 +742,7 @@ def _draw_panel(layout, context):
     col2.prop(props, "scene_source", text="")
     col2.operator("blendpaint.send_scene", icon='SCENE_DATA')
     layout.operator("blendpaint.new_texture", icon='ADD')
+    layout.operator("blendpaint.debug_material", icon='COPYDOWN')
 
 
 class BLENDPAINT_PT_node(bpy.types.Panel):
@@ -693,7 +769,7 @@ class BLENDPAINT_PT_view3d(bpy.types.Panel):
         _draw_panel(self.layout, context)
 
 
-classes = (BLENDPAINT_Props, BLENDPAINT_Prefs, BLENDPAINT_OT_server, BLENDPAINT_OT_send, BLENDPAINT_OT_send_scene,
+classes = (BLENDPAINT_Props, BLENDPAINT_Prefs, BLENDPAINT_OT_server, BLENDPAINT_OT_send, BLENDPAINT_OT_send_scene, BLENDPAINT_OT_debug_material,
            BLENDPAINT_OT_new_texture, BLENDPAINT_PT_node, BLENDPAINT_PT_view3d)
 
 
