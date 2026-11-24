@@ -554,7 +554,7 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
                            constant MeshUniforms& u [[buffer(4)]],
                            array<texture2d<float>, 12> tex [[texture(0)]]) {
     MFOut o;
-    o.aux = float4(in.uvA, in.viewDepth, u.neutral != 0 ? 0.0 : 1.0);
+    o.aux = float4(in.uvA, in.viewDepth, float(u.pad1));      // w = object id
 
     float3 Ng = normalize(in.normal);
     float3 V = normalize(u.camPos.xyz - in.world);
@@ -648,6 +648,8 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
         ambient = ambient * (1.0 - coatF) + skyColor(reflect(-V, coatN), u) * coatF;
     }
     color += ambient + s.emission;
+    // selection pulse (params2.z)
+    color += float3(1.0, 0.62, 0.25) * pow(1.0 - NdV, 2.0) * u.params2.z * 2.0;
     o.color = float4(tonemap(color * u.params2.y), 1.0);
     return o;
 }

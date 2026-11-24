@@ -46,6 +46,8 @@ struct TopBar: View {
                                 Text(model.session?.object ?? "Blender")
                                     .font(.subheadline.weight(.semibold))
                                     .lineLimit(1)
+                                    .contentTransition(.interpolate)
+                                    .animation(.spring(duration: 0.4), value: model.session?.object)
                                 Text(subtitle)
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
@@ -96,6 +98,19 @@ struct TopBar: View {
                         Image(systemName: "eyedropper.halffull").frame(width: 24, height: 24)
                     }
                     .glassButton(model.tool == .eyedropper)
+
+                    if model.sceneObjects.count > 1 {
+                        Button {
+                            model.showObjects.toggle()
+                        } label: {
+                            Image(systemName: "cube.transparent").frame(width: 24, height: 24)
+                        }
+                        .glassButton(model.focusName != nil)
+                        .popover(isPresented: $model.showObjects) {
+                            ObjectsPanel(model: model).frame(width: 320, height: 520)
+                        }
+                        .transition(.scale.combined(with: .opacity))
+                    }
 
                     Button {
                         model.showLayers.toggle()
@@ -341,6 +356,17 @@ struct BottomBar: View {
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.glass)
+
+                if model.focusName != nil {
+                    Button {
+                        model.unfocus()
+                    } label: {
+                        Label("Вся модель", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
 
                 Button {
                     model.fitCanvas()

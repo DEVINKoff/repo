@@ -556,7 +556,7 @@ fragment MeshFOut meshFragment(MeshVOut in [[stage_in]],
                                texture2d<float> emisTex [[texture(4)]],
                                texture2d<float> alphaTex [[texture(5)]]) {
     MeshFOut o;
-    o.aux = float4(in.uvA, in.viewDepth, u.neutral != 0 ? 0.0 : 1.0);
+    o.aux = float4(in.uvA, in.viewDepth, float(u.pad1));      // w = object id (0 = background)
 
     float3 N = normalize(in.normal);
     float3 V = normalize(u.camPos.xyz - in.world);
@@ -649,6 +649,20 @@ fragment MeshFOut meshFragment(MeshVOut in [[stage_in]],
     color = tonemap(color * u.params2.y);
     o.color = float4(color, 1.0);
     return o;
+}
+
+// "hologram" look for the parts that are not focused
+fragment float4 ghostFragment(MeshVOut in [[stage_in]], constant MeshUniforms& u [[buffer(4)]]) {
+    float3 N = normalize(in.normal);
+    float3 V = normalize(u.camPos.xyz - in.world);
+    float ndv = fabs(dot(N, V));
+    float rim = pow(1.0 - ndv, 2.2);
+    float t = u.params2.z;                       // focus amount 0…1
+    float3 tint = float3(0.45, 0.68, 1.0);
+    float3 c = tint * (0.06 + rim * 0.9);
+    float a = mix(0.9, 0.05 + rim * 0.4, t);
+    c = mix(float3(0.35) * (0.4 + 0.6 * ndv), c, t);
+    return float4(c * a, a);
 }
 
 struct BgOut {

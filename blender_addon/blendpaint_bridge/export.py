@@ -424,9 +424,8 @@ def _follow_shader(sock, stack, depth=0):
 
 
 def _find_surface_shader(mat):
-    nt = mat.node_tree
-    outs = [n for n in nt.nodes if n.type == 'OUTPUT_MATERIAL']
-    out = next((n for n in outs if n.is_active_output), outs[0] if outs else None)
+    from .shadergen import material_output
+    out = material_output(mat.node_tree)
     if not out:
         return None, ()
     return _follow_shader(out.inputs.get("Surface"), ())
@@ -503,7 +502,7 @@ def extra_images(desc, paint_image_name):
     return names
 
 
-def build_extra_blobs(names):
+def build_extra_blobs(names, max_size=EXTRA_TEXTURE_MAX):
     """Returns list of (info, bytes) for the extra (non-painted) textures used by the material."""
     out = []
     for name in names:
@@ -511,10 +510,130 @@ def build_extra_blobs(names):
         if not img:
             continue
         try:
-            w, h, data = image_rgba8(img, EXTRA_TEXTURE_MAX)
+            w, h, data = image_rgba8(img, max_size)
         except Exception as e:  # noqa
             print("BlendPaint: skip texture", name, e)
             continue
         out.append(({"name": name, "width": w, "height": h,
                      "colorspace": img.colorspace_settings.name}, deflate(data)))
     return out
+
+
+# --------------------------------------------------------------------------- whole scene
+
+def export_object(obj):
+    """Mesh of one object for the scene view: world-space corners, every UV map and color
+    attribute, triangles grouped per material slot. Returns (info, blobs dict, slot materials)."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eo = obj.evaluated_get(depsgraph)
+    me = eo.to_mesh()
+    try:
+        me.calc_loop_triangles()
+        nv, nl, nt = len(me.vertices), len(me.loops), len(me.loop_triangles)
+        if nt == 0:
+            return None
+        co = np.empty(nv * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        lv = np.empty(nl, np.int32)
+        me.loops.foreach_get("vertex_index", lv)
+        pos = co.reshape(-1, 3)[lv]
+        nrm = np.empty(nl * 3, np.float32)
+        if hasattr(me, "corner_normals"):
+            me.corner_normals.foreach_get("vector", nrm)
+        else:
+            me.calc_normals_split()
+            me.loops.foreach_get("normal", nrm)
+        nrm = nrm.reshape(-1, 3)
+        m = np.array(obj.matrix_world, dtype=np.float64)
+        m3 = m[:3, :3]
+        pos = (pos.astype(np.float64) @ m3.T + m[:3, 3]).astype(np.float32)
+        try:
+            nm = np.linalg.inv(m3).T
+        except np.linalg.LinAlgError:
+            nm = m3
+        nrm = nrm.astype(np.float64) @ nm.T
+        ln = np.linalg.norm(nrm, axis=1, keepdims=True)
+        ln[ln == 0] = 1
+        nrm = (nrm / ln).astype(np.float32)
+
+        tris = np.empty(nt * 3, np.int32)
+        me.loop_triangles.foreach_get("loops", tris)
+        tris = tris.reshape(-1, 3)
+        mi = np.empty(nt, np.int32)
+        me.loop_triangles.foreach_get("material_index", mi)
+        order = np.argsort(mi, kind="stable")
+        tris = tris[order]
+        mi = mi[order]
+        ranges = []
+        for slot in np.unique(mi):
+            idx = np.nonzero(mi == slot)[0]
+            ranges.append((int(slot), int(idx[0]) * 3, int(idx.size) * 3))
+
+        blobs = {"pos": pos.tobytes(), "nrm": nrm.tobytes(), "idx": tris.astype(np.uint32).ravel().tobytes()}
+        uv_names = []
+        for layer in me.uv_layers:
+            arr = np.empty(nl * 2, np.float32)
+            layer.data.foreach_get("uv", arr)
+            blobs["uv%d" % len(uv_names)] = arr.tobytes()
+            uv_names.append(layer.name)
+        if not uv_names:
+            blobs["uv0"] = np.zeros(nl * 2, np.float32).tobytes()
+            uv_names.append("(no UV)")
+        render_uv = next((l.name for l in me.uv_layers if getattr(l, "active_render", False)), uv_names[0])
+        col_names = []
+        cattrs = getattr(me, "color_attributes", None)
+        if cattrs is not None:
+            for ca in list(cattrs)[:4]:
+                try:
+                    if ca.domain == 'CORNER':
+                        arr = np.empty(nl * 4, np.float32)
+                        ca.data.foreach_get("color", arr)
+                    elif ca.domain == 'POINT':
+                        av = np.empty(nv * 4, np.float32)
+                        ca.data.foreach_get("color", av)
+                        arr = av.reshape(-1, 4)[lv].ravel()
+                    else:
+                        continue
+                except Exception:  # noqa
+                    continue
+                blobs["col%d" % len(col_names)] = arr.astype(np.float32).tobytes()
+                col_names.append(ca.name)
+        render_color = ""
+        if cattrs is not None:
+            render_color = getattr(cattrs, "default_color_name", "") or getattr(cattrs, "active_color_name", "") or ""
+        slot_mats = [s.material for s in obj.material_slots]
+        info = {"name": obj.name, "vertexCount": int(nl), "indexCount": int(tris.size),
+                "uvMaps": uv_names, "renderUV": render_uv, "colorAttrs": col_names, "renderColor": render_color,
+                "bmin": [float(x) for x in pos.min(axis=0)], "bmax": [float(x) for x in pos.max(axis=0)],
+                "ranges": ranges}
+        return info, blobs, slot_mats
+    finally:
+        eo.to_mesh_clear()
+
+
+def scene_objects(mode):
+    vl = bpy.context.view_layer
+    if mode == 'SELECTED':
+        objs = [o for o in vl.objects if o.select_get() and o.type == 'MESH']
+    elif mode == 'COLLECTION':
+        act = vl.objects.active
+        coll = act.users_collection[0] if act and act.users_collection else bpy.context.scene.collection
+        objs = [o for o in coll.all_objects if o.type == 'MESH' and o.visible_get()]
+    else:
+        objs = [o for o in vl.objects if o.type == 'MESH' and o.visible_get()]
+    return objs[:600]
+
+
+def find_object_paint_slot(obj):
+    """(slot_index, material, image node) of the first material slot that has a paintable image."""
+    act = obj.active_material
+    if act:
+        n = find_paint_node(act)
+        if n:
+            return obj.active_material_index, act, n
+    for i, s in enumerate(obj.material_slots):
+        if s.material:
+            n = find_paint_node(s.material)
+            if n:
+                return i, s.material, n
+    return None

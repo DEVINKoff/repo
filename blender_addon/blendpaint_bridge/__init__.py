@@ -198,6 +198,132 @@ def _needed_images(desc, program, paint_image):
     return names
 
 
+def send_scene():
+    """All meshes (visible / selected / collection) with their translated materials, for the
+    iPad's scene view where a part is picked by tapping it."""
+    if not S.server or not S.server.connected:
+        return False
+    props = _wm_props()
+    objs = export.scene_objects(props.scene_source)
+    programs, prog_key = [], {}
+    objects, chunks, blobs, off = [], [], [], 0
+    images = []
+    total_loops = 0
+
+    def add(bid, data, **extra):
+        nonlocal off
+        d = {"id": bid, "offset": off, "length": len(data)}
+        d.update(extra)
+        blobs.append(d)
+        chunks.append(data)
+        off += len(data)
+
+    bmin, bmax = [1e30] * 3, [-1e30] * 3
+    for o in objs:
+        try:
+            r = export.export_object(o)
+        except Exception as e:  # noqa
+            print("BlendPaint: scene skip", o.name, e)
+            continue
+        if not r:
+            continue
+        info, ob_blobs, slot_mats = r
+        total_loops += info["vertexCount"]
+        if total_loops > 6_000_000:
+            S.server.send({"type": "status", "level": "warning", "message": "Сцена слишком большая, отправлена часть объектов"})
+            break
+        k = len(objects)
+        subs = []
+        for slot, start, count in info["ranges"]:
+            mat = slot_mats[slot] if slot < len(slot_mats) else None
+            pi = -1
+            if mat is not None and mat.node_tree is not None:
+                key = (mat.name, tuple(info["uvMaps"]), tuple(info["colorAttrs"]))
+                if key not in prog_key:
+                    p = shadergen.compile_material(mat, o, "", info["uvMaps"], info["renderUV"],
+                                                   info["colorAttrs"], info["renderColor"])
+                    code_key = json.dumps(p, sort_keys=True)
+                    found = next((i for i, q in enumerate(programs) if json.dumps(q, sort_keys=True) == code_key), -1)
+                    if found < 0:
+                        programs.append(p)
+                        found = len(programs) - 1
+                        for t in p.get("textures", []):
+                            if t["image"] not in images:
+                                images.append(t["image"])
+                    prog_key[key] = found
+                pi = prog_key[key]
+            subs.append({"program": pi, "start": start, "count": count})
+        for name, data in ob_blobs.items():
+            add("o%d:%s" % (k, name), data)
+        bmin = [min(a, b) for a, b in zip(bmin, info["bmin"])]
+        bmax = [max(a, b) for a, b in zip(bmax, info["bmax"])]
+        objects.append({"name": o.name, "vertexCount": info["vertexCount"], "indexCount": info["indexCount"],
+                        "uvMaps": info["uvMaps"], "colorAttrs": info["colorAttrs"], "submeshes": subs,
+                        "bmin": info["bmin"], "bmax": info["bmax"]})
+    textures = []
+    for info, data in export.build_extra_blobs(images, 1024):
+        add("tex:" + info["name"], data, compression="deflate", rawLength=info["width"] * info["height"] * 4)
+        textures.append(info)
+    if not objects:
+        return False
+    S.server.send({"type": "scene", "objects": objects, "programs": programs, "textures": textures,
+                   "blobs": blobs, "bmin": bmin, "bmax": bmax}, b"".join(chunks))
+    S.status = "Scene: %d objects, %d materials" % (len(objects), len(programs))
+    return True
+
+
+def _select_object(name):
+    obj = bpy.data.objects.get(name)
+    if not obj or obj.type != 'MESH':
+        return
+    vl = bpy.context.view_layer
+    try:
+        for o in vl.objects:
+            if o.select_get() and o != obj:
+                o.select_set(False)
+        obj.select_set(True)
+        vl.objects.active = obj
+    except Exception as e:  # noqa
+        print("BlendPaint select:", e)
+    r = export.find_object_paint_slot(obj)
+    if not r:
+        S.server.send({"type": "no_texture", "object": name})
+        S.last_key = None
+        return
+    slot, mat, node = r
+    obj.active_material_index = slot
+    try:
+        _flush(force=True)
+        _start_session((obj, mat, node))
+    except Exception as e:  # noqa
+        S.server.send({"type": "status", "level": "error", "message": str(e)})
+
+
+def _create_texture(name, size, color=(0.8, 0.8, 0.8, 1.0)):
+    obj = bpy.data.objects.get(name)
+    if not obj or obj.type != 'MESH':
+        return
+    mat = obj.active_material
+    if mat is None:
+        mat = bpy.data.materials.new(obj.name + "_Mat")
+        mat.use_nodes = True
+        if obj.material_slots:
+            obj.material_slots[obj.active_material_index].material = mat
+        else:
+            obj.data.materials.append(mat)
+    img = bpy.data.images.new(obj.name + "_Paint", size, size, alpha=True)
+    img.generated_color = color
+    nt = mat.node_tree
+    node = nt.nodes.new('ShaderNodeTexImage')
+    node.image = img
+    node.location = (-450, 300)
+    bsdf = next((n for n in nt.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    if bsdf and not bsdf.inputs["Base Color"].is_linked:
+        nt.links.new(node.outputs["Color"], bsdf.inputs["Base Color"])
+    nt.nodes.active = node
+    _select_object(name)
+
+
 def send_current(force=True):
     if not S.server or not S.server.connected:
         S.status = "iPad not connected"
@@ -309,6 +435,12 @@ def _pump():
                 S.client_name = header.get("client", "iPad")
             elif t == "request_session":
                 send_current(force=True)
+            elif t == "request_scene":
+                send_scene()
+            elif t == "select_object":
+                _select_object(header.get("name", ""))
+            elif t == "create_texture":
+                _create_texture(header.get("name", ""), int(header.get("size", 2048)))
             elif t == "save_image":
                 _save_image()
             elif t == "set_follow":
@@ -381,6 +513,11 @@ def stop_server():
 # --------------------------------------------------------------------------- UI
 
 class BLENDPAINT_Props(bpy.types.PropertyGroup):
+    scene_source: bpy.props.EnumProperty(
+        name="Scene", default='VISIBLE',
+        items=[('VISIBLE', "Visible meshes", "Every visible mesh in the view layer"),
+               ('SELECTED', "Selected meshes", "Only the selected meshes"),
+               ('COLLECTION', "Active collection", "Meshes of the active object's collection")])
     follow_selection: bpy.props.BoolProperty(
         name="Follow selection", default=True,
         description="Automatically send the active object / active Image Texture node to the iPad")
@@ -423,6 +560,17 @@ class BLENDPAINT_OT_send(bpy.types.Operator):
     def execute(self, context):
         if not send_current(force=True):
             self.report({'WARNING'}, S.status)
+        return {'FINISHED'}
+
+
+class BLENDPAINT_OT_send_scene(bpy.types.Operator):
+    bl_idname = "blendpaint.send_scene"
+    bl_label = "Send Scene to iPad"
+    bl_description = "Send all meshes (see Scene setting) so you can tap parts on the iPad"
+
+    def execute(self, context):
+        if not send_scene():
+            self.report({'WARNING'}, "Nothing sent (iPad not connected or no meshes)")
         return {'FINISHED'}
 
 
@@ -514,6 +662,10 @@ def _draw_panel(layout, context):
     row.scale_y = 1.4
     row.enabled = running
     row.operator("blendpaint.send", icon='EXPORT')
+    col2 = layout.column(align=True)
+    col2.enabled = running
+    col2.prop(props, "scene_source", text="")
+    col2.operator("blendpaint.send_scene", icon='SCENE_DATA')
     layout.operator("blendpaint.new_texture", icon='ADD')
 
 
@@ -541,7 +693,7 @@ class BLENDPAINT_PT_view3d(bpy.types.Panel):
         _draw_panel(self.layout, context)
 
 
-classes = (BLENDPAINT_Props, BLENDPAINT_Prefs, BLENDPAINT_OT_server, BLENDPAINT_OT_send,
+classes = (BLENDPAINT_Props, BLENDPAINT_Prefs, BLENDPAINT_OT_server, BLENDPAINT_OT_send, BLENDPAINT_OT_send_scene,
            BLENDPAINT_OT_new_texture, BLENDPAINT_PT_node, BLENDPAINT_PT_view3d)
 
 

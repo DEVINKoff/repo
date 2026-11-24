@@ -121,6 +121,23 @@ def _trace(sock, stack, depth=0):
     return ("node", node, out, stack)
 
 
+def material_output(nt):
+    """The Material Output EEVEE uses: an EEVEE-target output wins (Mecabricks has separate
+    EEVEE and Cycles outputs), then the active ALL output, then any active one."""
+    outs = [n for n in nt.nodes if n.type == 'OUTPUT_MATERIAL']
+    if not outs:
+        return None
+    for cond in (lambda n: n.target == 'EEVEE' and n.is_active_output,
+                 lambda n: n.target == 'EEVEE',
+                 lambda n: n.target == 'ALL' and n.is_active_output,
+                 lambda n: n.target == 'ALL',
+                 lambda n: n.is_active_output):
+        for n in outs:
+            if cond(n):
+                return n
+    return outs[0]
+
+
 def _default(sock):
     v = getattr(sock, "default_value", None)
     if v is None:
@@ -683,10 +700,7 @@ class Compiler:
 
     # ---------------------------------------------------------------- entry
     def compile(self):
-        nt = self.mat.node_tree
-        outs = [n for n in nt.nodes if n.type == 'OUTPUT_MATERIAL']
-        out = next((n for n in outs if n.is_active_output and n.target in ('ALL', 'EEVEE')), None) \
-            or next((n for n in outs if n.is_active_output), outs[0] if outs else None)
+        out = material_output(self.mat.node_tree)
         if out is None:
             body = "s = surfDefault();"
         else:

@@ -140,6 +140,36 @@ struct SessionHeader: Codable {
     let blobs: [BlobInfo]
 }
 
+struct SceneSubmesh: Codable {
+    let program: Int
+    let start: Int
+    let count: Int
+}
+
+struct SceneObjectInfo: Codable {
+    let name: String
+    let vertexCount: Int
+    let indexCount: Int
+    let uvMaps: [String]
+    let colorAttrs: [String]
+    let submeshes: [SceneSubmesh]
+    let bmin: [Float]
+    let bmax: [Float]
+}
+
+struct SceneHeader: Codable {
+    let objects: [SceneObjectInfo]
+    let programs: [MaterialProgram]
+    let textures: [TextureInfo]
+    let blobs: [BlobInfo]
+    let bmin: [Float]
+    let bmax: [Float]
+}
+
+struct NoTextureHeader: Codable {
+    let object: String
+}
+
 struct MaterialHeader: Codable {
     let sessionId: Int
     let materialDesc: MaterialDesc

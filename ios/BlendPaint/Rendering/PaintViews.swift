@@ -378,12 +378,24 @@ final class ModelMTKView: PaintInputView, MTKViewDelegate {
     private(set) var auxTexture: MTLTexture?
     private var depthTexture: MTLTexture?
 
+    private let tap1 = UITapGestureRecognizer()
+
     override init(model: AppModel) {
         super.init(model: model)
         colorPixelFormat = .bgra8Unorm_srgb
         depthStencilPixelFormat = .invalid
         delegate = self
         model.modelView = self
+        tap1.numberOfTouchesRequired = 1
+        tap1.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        tap1.addTarget(self, action: #selector(onTap1(_:)))
+        addGestureRecognizer(tap1)
+    }
+
+    // tap a part to paint on it, tap empty space to see everything again
+    @objc func onTap1(_ g: UITapGestureRecognizer) {
+        guard let m = model, !m.settings.fingerPainting else { return }
+        m.tapModel(at: g.location(in: self))
     }
 
     required init(coder: NSCoder) { fatalError() }

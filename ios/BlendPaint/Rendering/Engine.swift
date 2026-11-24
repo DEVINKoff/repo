@@ -72,7 +72,7 @@ final class MeshGPU {
     let paintIndexCount: Int
     let edges: MTLBuffer?
     let edgeIndexCount: Int
-    let model: simd_float4x4
+    var model: simd_float4x4
     var colors: [MTLBuffer] = []
     var colorNames: [String] = []
     var boundsMin = SIMD3<Float>(repeating: 0)
@@ -84,6 +84,54 @@ final class MeshGPU {
         self.indices = indices; self.indexCount = indexCount; self.paintIndexCount = paintIndexCount
         self.edges = edges; self.edgeIndexCount = edgeIndexCount; self.model = model
     }
+}
+
+struct DrawGeom {
+    let positions: MTLBuffer
+    let normals: MTLBuffer
+    let uvs: [MTLBuffer]
+    let uvNames: [String]
+    let paintUV: MTLBuffer
+    let colors: [MTLBuffer]
+    let colorNames: [String]
+    let indices: MTLBuffer
+    let bmin: SIMD3<Float>
+    let bmax: SIMD3<Float>
+}
+
+/// One mesh of the scene view (Mecabricks part etc.), drawn with its own translated materials.
+final class SceneObject {
+    let name: String
+    let geom: DrawGeom
+    let submeshes: [SceneSubmesh]
+    let indexCount: Int
+    let center: SIMD3<Float>     // normalized scene space
+    let radius: Float
+
+    init(name: String, geom: DrawGeom, submeshes: [SceneSubmesh], indexCount: Int, center: SIMD3<Float>, radius: Float) {
+        self.name = name; self.geom = geom; self.submeshes = submeshes; self.indexCount = indexCount
+        self.center = center; self.radius = radius
+    }
+}
+
+final class SceneGPU {
+    let objects: [SceneObject]
+    let programs: [MaterialProgram]
+    var pipelines: [MTLRenderPipelineState?]
+    let model: simd_float4x4
+
+    init(objects: [SceneObject], programs: [MaterialProgram], model: simd_float4x4) {
+        self.objects = objects
+        self.programs = programs
+        self.pipelines = Array(repeating: nil, count: programs.count)
+        self.model = model
+    }
+}
+
+final class DisplayLinkProxy: NSObject {
+    let cb: () -> Void
+    init(_ cb: @escaping () -> Void) { self.cb = cb }
+    @objc func tick() { cb() }
 }
 
 enum StrokeMode { case paint, erase }
@@ -165,6 +213,8 @@ final class Engine {
     private var premulPipeline: MTLComputePipelineState!
     private var dilatePipeline: MTLComputePipelineState!
     private var meshDepth: MTLDepthStencilState!
+    private var ghostPipeline: MTLRenderPipelineState!
+    private var ghostDepth: MTLDepthStencilState!
     private var bgDepth: MTLDepthStencilState!
 
     private(set) var grainTexture: MTLTexture!
@@ -326,6 +376,25 @@ final class Engine {
         md.depthCompareFunction = .less
         md.isDepthWriteEnabled = true
         meshDepth = device.makeDepthStencilState(descriptor: md)
+        let gd = MTLDepthStencilDescriptor()
+        gd.depthCompareFunction = .less
+        gd.isDepthWriteEnabled = false
+        ghostDepth = device.makeDepthStencilState(descriptor: gd)
+        do {
+            let d = MTLRenderPipelineDescriptor()
+            d.vertexFunction = library.makeFunction(name: "meshVertex")
+            d.fragmentFunction = library.makeFunction(name: "ghostFragment")
+            d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+            d.colorAttachments[0].isBlendingEnabled = true
+            d.colorAttachments[0].sourceRGBBlendFactor = .one
+            d.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+            d.colorAttachments[0].sourceAlphaBlendFactor = .one
+            d.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
+            d.colorAttachments[1].pixelFormat = .rgba32Float
+            d.colorAttachments[1].writeMask = []
+            d.depthAttachmentPixelFormat = .depth32Float
+            ghostPipeline = try device.makeRenderPipelineState(descriptor: d)
+        }
         let bd = MTLDepthStencilDescriptor()
         bd.depthCompareFunction = .always
         bd.isDepthWriteEnabled = false
@@ -652,21 +721,20 @@ final class Engine {
         u.lighting = UInt32(lighting.rawValue)
     }
 
-    /// Compiles the translated material asynchronously. `done` gets nil on success or an error text.
-    func setProgram(_ p: MaterialProgram?, done: @escaping (String?) -> Void) {
-        programGeneration += 1
-        let gen = programGeneration
-        guard let p else {
-            program = nil
-            programPipeline = nil
-            requestRedraw()
-            done(nil)
-            return
-        }
-        if p == program, programPipeline != nil { done(nil); return }
+    // MARK: - runtime material programs
+
+    private var pipelineCache: [String: MTLRenderPipelineState] = [:]
+    private var pipelineWaiters: [String: [(MTLRenderPipelineState?, String?) -> Void]] = [:]
+
+    private func compileProgram(_ p: MaterialProgram, done: @escaping (MTLRenderPipelineState?, String?) -> Void) {
+        let key = "\((p.alpha ?? true) ? 1 : 0)|" + p.code
+        if let c = pipelineCache[key] { done(c, nil); return }
+        if pipelineWaiters[key] != nil { pipelineWaiters[key]!.append(done); return }
+        pipelineWaiters[key] = [done]
         guard let url = Bundle.main.url(forResource: "MaterialTemplate", withExtension: "txt"),
               let template = try? String(contentsOf: url, encoding: .utf8) else {
-            done("MaterialTemplate.txt не найден в приложении")
+            pipelineWaiters[key] = nil
+            done(nil, "MaterialTemplate.txt не найден в приложении")
             return
         }
         let source = "#define BP_ALPHA \((p.alpha ?? true) ? 1 : 0)\n" + template.replacingOccurrences(of: "//@@MATERIAL@@", with: p.code)
@@ -685,71 +753,122 @@ final class Engine {
                 err = error?.localizedDescription ?? "compile failed"
             }
             DispatchQueue.main.async {
-                guard let self, gen == self.programGeneration else { return }
-                if let pipe {
-                    self.program = p
-                    self.programPipeline = pipe
-                    self.requestRedraw()
-                    done(nil)
-                } else {
-                    print("Material compile error:\n\(err ?? "")")
-                    done(String((err ?? "").prefix(300)))
-                }
+                guard let self else { return }
+                if let pipe { self.pipelineCache[key] = pipe }
+                if pipe == nil { print("Material compile error:\n\(err ?? "")") }
+                let waiters = self.pipelineWaiters[key] ?? []
+                self.pipelineWaiters[key] = nil
+                for w in waiters { w(pipe, pipe == nil ? String((err ?? "").prefix(300)) : nil) }
             }
+        }
+    }
+
+    /// Compiles the paint object's translated material. `done` gets nil on success or an error text.
+    func setProgram(_ p: MaterialProgram?, done: @escaping (String?) -> Void) {
+        programGeneration += 1
+        let gen = programGeneration
+        guard let p else {
+            program = nil
+            programPipeline = nil
+            requestRedraw()
+            done(nil)
+            return
+        }
+        if p == program, programPipeline != nil { done(nil); return }
+        compileProgram(p) { [weak self] pipe, err in
+            guard let self, gen == self.programGeneration else { return }
+            if let pipe {
+                self.program = p
+                self.programPipeline = pipe
+                self.requestRedraw()
+            }
+            done(err)
         }
     }
 
     private func textureForProgram(_ t: ProgramTexture) -> MTLTexture {
         if t.paint, let e = exportTex { return e }
+        if t.image == paintImageName, hasDocument, let e = exportTex { return e }
         if let e = extraTextures[t.image] { return e.linear }
-        if t.image == paintImageName, let e = exportTex { return e }
         return whiteTexture!
     }
 
-    private func encodeProgramMesh(_ enc: MTLRenderCommandEncoder, _ m: MeshGPU, _ pipe: MTLRenderPipelineState,
-                                   _ p: MaterialProgram, _ uIn: MeshUniforms) {
+    /// ranges: (index start, index count, neutral)
+    private func drawProgram(_ enc: MTLRenderCommandEncoder, _ pipe: MTLRenderPipelineState, _ p: MaterialProgram,
+                             _ g: DrawGeom, _ ranges: [(Int, Int, Bool)], _ uIn: MeshUniforms) {
         var u = uIn
         enc.setRenderPipelineState(pipe)
         enc.setDepthStencilState(meshDepth)
         enc.setCullMode(.none)
-        enc.setVertexBuffer(m.positions, offset: 0, index: 0)
-        enc.setVertexBuffer(m.normals, offset: 0, index: 1)
-        enc.setVertexBuffer(m.uvs[paintUV], offset: 0, index: 2)
+        enc.setVertexBuffer(g.positions, offset: 0, index: 0)
+        enc.setVertexBuffer(g.normals, offset: 0, index: 1)
+        enc.setVertexBuffer(g.paintUV, offset: 0, index: 2)
         for i in 0..<4 {
-            var buf = m.uvs[paintUV]
-            if i < p.uvSlots.count, let k = m.uvNames.firstIndex(of: p.uvSlots[i]), k < m.uvs.count { buf = m.uvs[k] }
+            var buf = g.paintUV
+            if i < p.uvSlots.count, let k = g.uvNames.firstIndex(of: p.uvSlots[i]), k < g.uvs.count { buf = g.uvs[k] }
             enc.setVertexBuffer(buf, offset: 0, index: 5 + i)
         }
         var flags: UInt32 = 0
         for i in 0..<2 {
-            if i < p.colorSlots.count, let k = m.colorNames.firstIndex(of: p.colorSlots[i]), k < m.colors.count {
-                enc.setVertexBuffer(m.colors[k], offset: 0, index: 9 + i)
+            if i < p.colorSlots.count, let k = g.colorNames.firstIndex(of: p.colorSlots[i]), k < g.colors.count {
+                enc.setVertexBuffer(g.colors[k], offset: 0, index: 9 + i)
                 flags |= UInt32(1 << i)
             } else {
                 enc.setVertexBuffer(dummyColor, offset: 0, index: 9 + i)
             }
         }
         u.pad0 = flags
-        u.baseColor = SIMD4(m.boundsMin.x, m.boundsMin.y, m.boundsMin.z, 0)
-        u.emission = SIMD4(m.boundsMax.x, m.boundsMax.y, m.boundsMax.z, 0)
+        u.baseColor = SIMD4(g.bmin.x, g.bmin.y, g.bmin.z, 0)
+        u.emission = SIMD4(g.bmax.x, g.bmax.y, g.bmax.z, 0)
         for i in 0..<12 {
-            let t = i < p.textures.count ? textureForProgram(p.textures[i]) : whiteTexture!
-            enc.setFragmentTexture(t, index: i)
+            enc.setFragmentTexture(i < p.textures.count ? textureForProgram(p.textures[i]) : whiteTexture!, index: i)
         }
-        enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
-        enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
-        if m.paintIndexCount > 0 {
-            enc.drawIndexedPrimitives(type: .triangle, indexCount: m.paintIndexCount, indexType: .uint32,
-                                      indexBuffer: m.indices, indexBufferOffset: 0)
-        }
-        let rest = m.indexCount - m.paintIndexCount
-        if rest > 0 {
-            u.neutral = 1
+        for r in ranges where r.1 > 0 {
+            u.neutral = r.2 ? 1 : 0
             enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
             enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
-            enc.drawIndexedPrimitives(type: .triangle, indexCount: rest, indexType: .uint32,
-                                      indexBuffer: m.indices, indexBufferOffset: m.paintIndexCount * 4)
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: r.1, indexType: .uint32,
+                                      indexBuffer: g.indices, indexBufferOffset: r.0 * 4)
         }
+    }
+
+    /// gray clay while a material is still compiling (or failed)
+    private func drawNeutral(_ enc: MTLRenderCommandEncoder, _ g: DrawGeom, _ ranges: [(Int, Int, Bool)], _ uIn: MeshUniforms) {
+        var u = uIn
+        u.neutral = 1
+        enc.setRenderPipelineState(meshPipeline)
+        enc.setDepthStencilState(meshDepth)
+        enc.setCullMode(.none)
+        enc.setVertexBuffer(g.positions, offset: 0, index: 0)
+        enc.setVertexBuffer(g.normals, offset: 0, index: 1)
+        enc.setVertexBuffer(g.paintUV, offset: 0, index: 2)
+        enc.setVertexBuffer(g.paintUV, offset: 0, index: 3)
+        enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+        enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+        for r in ranges where r.1 > 0 {
+            enc.drawIndexedPrimitives(type: .triangle, indexCount: r.1, indexType: .uint32,
+                                      indexBuffer: g.indices, indexBufferOffset: r.0 * 4)
+        }
+    }
+
+    private func drawGhost(_ enc: MTLRenderCommandEncoder, _ g: DrawGeom, count: Int, _ uIn: MeshUniforms) {
+        var u = uIn
+        u.params2.z = focusAmount
+        enc.setRenderPipelineState(ghostPipeline)
+        enc.setDepthStencilState(ghostDepth)
+        enc.setCullMode(.back)
+        enc.setVertexBuffer(g.positions, offset: 0, index: 0)
+        enc.setVertexBuffer(g.normals, offset: 0, index: 1)
+        enc.setVertexBuffer(g.paintUV, offset: 0, index: 2)
+        enc.setVertexBuffer(g.paintUV, offset: 0, index: 3)
+        enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+        enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
+        enc.drawIndexedPrimitives(type: .triangle, indexCount: count, indexType: .uint32, indexBuffer: g.indices, indexBufferOffset: 0)
+    }
+
+    private func paintGeom(_ m: MeshGPU) -> DrawGeom {
+        DrawGeom(positions: m.positions, normals: m.normals, uvs: m.uvs, uvNames: m.uvNames, paintUV: m.uvs[paintUV],
+                 colors: m.colors, colorNames: m.colorNames, indices: m.indices, bmin: m.boundsMin, bmax: m.boundsMax)
     }
 
     func encodeMesh(_ enc: MTLRenderCommandEncoder, aspect: Float) {
@@ -767,12 +886,49 @@ final class Engine {
         enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
         enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
-        guard let m = mesh else { return }
-        u.model = m.model
-        if let pipe = programPipeline, let p = program {
-            encodeProgramMesh(enc, m, pipe, p, u)
-            return
+        var ghosts: [SceneObject] = []
+        let focusing = focusName != nil && focusAmount > 0.001
+        if let sc = scene, sceneVisible {
+            u.model = sc.model
+            for (i, o) in sc.objects.enumerated() {
+                if mesh != nil && o.name == paintObjectName { continue }
+                if focusing && o.name != focusName { ghosts.append(o); continue }
+                var uo = u
+                uo.pad1 = UInt32(i + 1)
+                uo.params2.z = o.name == focusName ? highlight : 0
+                // group submeshes by material program
+                var byProgram: [Int: [(Int, Int, Bool)]] = [:]
+                for sm in o.submeshes { byProgram[sm.program, default: []].append((sm.start, sm.count, false)) }
+                for (pi, ranges) in byProgram {
+                    if pi >= 0, pi < sc.programs.count, let pipe = sc.pipelines[pi] {
+                        drawProgram(enc, pipe, sc.programs[pi], o.geom, ranges, uo)
+                    } else {
+                        drawNeutral(enc, o.geom, ranges, uo)
+                    }
+                }
+            }
         }
+
+        if let m = mesh {
+            u.model = m.model
+            u.pad1 = UInt32(paintObjectID)
+            u.params2.z = (focusName == nil || focusName == paintObjectName) ? highlight : 0
+            let rest = m.indexCount - m.paintIndexCount
+            if let pipe = programPipeline, let p = program {
+                drawProgram(enc, pipe, p, paintGeom(m), [(0, m.paintIndexCount, false), (m.paintIndexCount, rest, true)], u)
+            } else {
+                encodeSimpleMesh(enc, m, u)
+            }
+        }
+
+        if !ghosts.isEmpty, let sc = scene {
+            u.model = sc.model
+            for o in ghosts { drawGhost(enc, o.geom, count: o.indexCount, u) }
+        }
+    }
+
+    private func encodeSimpleMesh(_ enc: MTLRenderCommandEncoder, _ m: MeshGPU, _ uIn: MeshUniforms) {
+        var u = uIn
         enc.setRenderPipelineState(meshPipeline)
         enc.setDepthStencilState(meshDepth)
         enc.setCullMode(.none)
@@ -796,6 +952,126 @@ final class Engine {
             enc.setFragmentBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
             enc.drawIndexedPrimitives(type: .triangle, indexCount: rest, indexType: .uint32,
                                       indexBuffer: m.indices, indexBufferOffset: m.paintIndexCount * 4)
+        }
+    }
+
+    // MARK: - scene (many meshes, tap to focus)
+
+    private(set) var scene: SceneGPU?
+    var paintObjectName = ""
+    private(set) var focusName: String?
+    private(set) var focusAmount: Float = 0
+    private var highlight: Float = 0
+    private var anim: (start: CFTimeInterval, dur: Double, from: OrbitCamera, to: OrbitCamera, f0: Float, f1: Float)?
+    private var link: CADisplayLink?
+    private var linkProxy: DisplayLinkProxy?
+
+    var sceneVisible: Bool {
+        guard let sc = scene else { return false }
+        return mesh == nil || sc.objects.contains { $0.name == paintObjectName }
+    }
+
+    var paintObjectID: Int {
+        if let sc = scene, let i = sc.objects.firstIndex(where: { $0.name == paintObjectName }) { return i + 1 }
+        return 1
+    }
+
+    func objectName(forID id: Int) -> String? {
+        guard id > 0 else { return nil }
+        if let sc = scene, sceneVisible { return id - 1 < sc.objects.count ? sc.objects[id - 1].name : nil }
+        return mesh != nil ? paintObjectName : nil
+    }
+
+    func setScene(_ s: SceneGPU?, onCompiled: @escaping (Int, Int) -> Void) {
+        scene = s
+        focusName = nil
+        focusAmount = 0
+        guard let s else { requestRedraw(); return }
+        var done = 0
+        let total = s.programs.count
+        for (i, p) in s.programs.enumerated() {
+            compileProgram(p) { [weak self, weak s] pipe, _ in
+                guard let self, let s, self.scene === s else { return }
+                s.pipelines[i] = pipe
+                done += 1
+                onCompiled(done, total)
+                self.requestRedraw()
+            }
+        }
+        requestRedraw()
+    }
+
+    /// keep the last painted state of the current texture visible in the scene after switching parts
+    func preservePaintedTexture() {
+        guard hasDocument, !paintImageName.isEmpty, let src = exportTex,
+              let t = makeTexture(.rgba8Unorm, width, height, [.shaderRead, .pixelFormatView], mipmapped: true),
+              let cmd = queue.makeCommandBuffer() else { return }
+        encodeCompositeIfNeeded(cmd)
+        if let blit = cmd.makeBlitCommandEncoder() {
+            blit.copy(from: src, to: t)
+            blit.endEncoding()
+        }
+        cmd.commit()
+        extraTextures[paintImageName] = (t, t.makeTextureView(pixelFormat: .rgba8Unorm_srgb) ?? t, paintImageNonColor)
+    }
+
+    func cameraFor(objectNamed name: String?) -> OrbitCamera {
+        var c = camera
+        if let name, let sc = scene, let o = sc.objects.first(where: { $0.name == name }) {
+            c.target = o.center
+            c.distance = max(o.radius * 2.6, 0.05)
+        } else if let name, name == paintObjectName, let m = mesh {
+            let ctr = (m.boundsMin + m.boundsMax) * 0.5
+            let p = m.model * SIMD4(ctr.x, ctr.y, ctr.z, 1)
+            c.target = SIMD3(p.x, p.y, p.z)
+            c.distance = max(simd_length(m.boundsMax - m.boundsMin) * 0.5 * m.model.columns.0.x * 2.6, 0.05)
+        } else {
+            c.target = .zero
+            c.distance = 3.2
+        }
+        return c
+    }
+
+    func focus(_ name: String?) {
+        focusName = name
+        highlight = name == nil ? 0 : 1
+        animateCamera(to: cameraFor(objectNamed: name), focus: name == nil ? 0 : 1)
+    }
+
+    func animateCamera(to c: OrbitCamera, focus f: Float, duration: Double = 0.7) {
+        anim = (CACurrentMediaTime(), duration, camera, c, focusAmount, f)
+        if link == nil {
+            let proxy = DisplayLinkProxy { [weak self] in self?.stepAnimation() }
+            let l = CADisplayLink(target: proxy, selector: #selector(DisplayLinkProxy.tick))
+            l.add(to: .main, forMode: .common)
+            link = l
+            linkProxy = proxy
+        }
+    }
+
+    private func stepAnimation() {
+        var running = false
+        if let a = anim {
+            let t = min(1, (CACurrentMediaTime() - a.start) / a.dur)
+            let e = Float(t < 0.5 ? 4 * t * t * t : 1 - pow(-2 * t + 2, 3) / 2)       // easeInOutCubic
+            camera.target = a.from.target + (a.to.target - a.from.target) * e
+            camera.distance = a.from.distance * pow(a.to.distance / max(a.from.distance, 1e-4), e)
+            camera.yaw = a.from.yaw + (a.to.yaw - a.from.yaw) * e
+            camera.pitch = a.from.pitch + (a.to.pitch - a.from.pitch) * e
+            focusAmount = a.f0 + (a.f1 - a.f0) * e
+            if t >= 1 { anim = nil } else { running = true }
+        }
+        if highlight > 0.001 {
+            highlight *= 0.93
+            running = true
+        } else {
+            highlight = 0
+        }
+        requestRedraw()
+        if !running {
+            link?.invalidate()
+            link = nil
+            linkProxy = nil
         }
     }
 

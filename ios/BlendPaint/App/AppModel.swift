@@ -201,6 +201,7 @@ final class AppModel {
     var showConnect = false
     var showSettings = false
     var showBrushEditor = false
+    var showObjects = false
 
     init() {
         guard let e = Engine() else { fatalError("Metal is not available") }
@@ -411,6 +412,7 @@ final class AppModel {
         case .connected(let h):
             connection = .connected(h)
             client.send(["type": "hello", "client": UIDevice.current.name, "version": 1])
+            client.send(["type": "request_scene"])
             client.send(["type": "request_session"])
             toast("Подключено к Blender (\(h))")
         case .failed(let e):
@@ -488,6 +490,25 @@ final class AppModel {
                 self.engine.setMaterial(m.materialDesc, paintImage: s.image.name, paintNonColor: s.image.colorspace == "Non-Color")
                 self.applyProgram()
             }
+        case "scene":
+            guard let sc = try? dec.decode(SceneHeader.self, from: hdr) else {
+                DispatchQueue.main.async { self.toast("Не удалось разобрать сцену", level: "error") }
+                return
+            }
+            var textures: [(TextureInfo, Data)] = []
+            for b in sc.blobs where b.id.hasPrefix("tex:") {
+                if let info = sc.textures.first(where: { "tex:" + $0.name == b.id }),
+                   let d = Deflate.decompress(payload.blob(b), rawLength: b.rawLength ?? 0) {
+                    textures.append((info, d))
+                }
+            }
+            DispatchQueue.main.async { self.applyScene(sc, payload: payload, textures: textures) }
+        case "no_texture":
+            if let n = try? dec.decode(NoTextureHeader.self, from: hdr) {
+                DispatchQueue.main.async {
+                    withAnimation(.spring(duration: 0.4)) { self.noTextureObject = n.object }
+                }
+            }
         case "status":
             if let st = try? dec.decode(StatusHeader.self, from: hdr) {
                 DispatchQueue.main.async { self.toast(st.message, level: st.level ?? "info") }
@@ -508,8 +529,9 @@ final class AppModel {
     private func applySession(_ s: SessionHeader, payload: Data, image: Data?, textures: [(TextureInfo, Data)]) {
         if engine.strokeActive { engine.cancelStroke() }
         autosave()
+        engine.preservePaintedTexture()
+        withAnimation(.spring(duration: 0.4)) { noTextureObject = nil }
         let blobs = Dictionary(s.blobs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        engine.clearExtraTextures()
         for (info, d) in textures {
             engine.addExtraTexture(name: info.name, width: info.width, height: info.height, straightRGBA: d, colorspace: info.colorspace)
         }
@@ -540,7 +562,10 @@ final class AppModel {
                 r = max(r, simd_length(SIMD3(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]) - center))
             }
             r = max(r, 1e-4)
-            let model = simd_float4x4.scale(1 / r) * simd_float4x4.translation(-center)
+            var model = simd_float4x4.scale(1 / r) * simd_float4x4.translation(-center)
+            if let sc = engine.scene, sc.objects.contains(where: { $0.name == s.object }) {
+                model = sc.model          // same space as the rest of the scene
+            }
             let edges = buffer(payload, blobs["edges"])
             let mesh = MeshGPU(positions: pos, normals: nrm, uvs: uvs, uvNames: s.mesh.uvMaps, indices: idx,
                                indexCount: s.mesh.indexCount, paintIndexCount: s.mesh.paintIndexCount,
@@ -554,6 +579,7 @@ final class AppModel {
                 }
             }
             paintUVIndex = s.mesh.uvMaps.firstIndex(of: s.paintUV) ?? 0
+            engine.paintObjectName = s.object
             engine.setMesh(mesh, paintUV: paintUVIndex)
         }
         engine.setMaterial(s.materialDesc, paintImage: s.image.name, paintNonColor: s.image.colorspace == "Non-Color")
@@ -561,7 +587,12 @@ final class AppModel {
                               uvMaps: s.mesh.uvMaps, materialDesc: s.materialDesc, program: s.program)
         engine.setProgram(nil) { _ in }
         applyProgram()
-        engine.camera = OrbitCamera()
+        if !engine.sceneVisible {
+            engine.camera = OrbitCamera()
+        } else if focusName != nil && focusName != s.object {
+            focusName = s.object
+            engine.focus(s.object)
+        }
         needsFit = true
         documentDirty = false
         canvasView?.fitIfNeeded()
@@ -597,6 +628,98 @@ final class AppModel {
                 self.lastUnsupported = p.unsupported
             }
         }
+    }
+
+    // MARK: - scene / tap to select
+
+    var sceneObjects: [String] = []
+    var focusName: String?
+    var noTextureObject: String?
+    var sceneStatus = ""
+
+    private func applyScene(_ sc: SceneHeader, payload: Data, textures: [(TextureInfo, Data)]) {
+        let blobs = Dictionary(sc.blobs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        for (info, d) in textures {
+            engine.addExtraTexture(name: info.name, width: info.width, height: info.height, straightRGBA: d, colorspace: info.colorspace)
+        }
+        func v3(_ a: [Float]) -> SIMD3<Float> { SIMD3(a.count > 0 ? a[0] : 0, a.count > 1 ? a[1] : 0, a.count > 2 ? a[2] : 0) }
+        let bmin = v3(sc.bmin), bmax = v3(sc.bmax)
+        let center = (bmin + bmax) * 0.5
+        let radius = max(simd_length(bmax - bmin) * 0.5, 1e-4)
+        let scale = 1 / radius
+        let model = simd_float4x4.scale(scale) * simd_float4x4.translation(-center)
+        var objects: [SceneObject] = []
+        for (k, o) in sc.objects.enumerated() {
+            guard let pos = buffer(payload, blobs["o\(k):pos"]), let nrm = buffer(payload, blobs["o\(k):nrm"]),
+                  let idx = buffer(payload, blobs["o\(k):idx"]) else { continue }
+            var uvs: [MTLBuffer] = []
+            for i in 0..<o.uvMaps.count { if let b = buffer(payload, blobs["o\(k):uv\(i)"]) { uvs.append(b) } }
+            guard let firstUV = uvs.first else { continue }
+            var cols: [MTLBuffer] = []
+            var colNames: [String] = []
+            for (i, n) in o.colorAttrs.enumerated() {
+                if let b = buffer(payload, blobs["o\(k):col\(i)"]) { cols.append(b); colNames.append(n) }
+            }
+            let ob = v3(o.bmin), oa = v3(o.bmax)
+            let geom = DrawGeom(positions: pos, normals: nrm, uvs: uvs, uvNames: Array(o.uvMaps.prefix(uvs.count)), paintUV: firstUV,
+                                colors: cols, colorNames: colNames, indices: idx, bmin: ob, bmax: oa)
+            objects.append(SceneObject(name: o.name, geom: geom, submeshes: o.submeshes, indexCount: o.indexCount,
+                                       center: ((ob + oa) * 0.5 - center) * scale,
+                                       radius: max(simd_length(oa - ob) * 0.5 * scale, 0.01)))
+        }
+        let gpu = SceneGPU(objects: objects, programs: sc.programs, model: model)
+        sceneStatus = sc.programs.isEmpty ? "" : "Материалы 0/\(sc.programs.count)"
+        engine.setScene(gpu) { [weak self] done, total in
+            self?.sceneStatus = done >= total ? "" : "Материалы \(done)/\(total)"
+        }
+        if let m = engine.mesh, objects.contains(where: { $0.name == engine.paintObjectName }) {
+            m.model = model
+            engine.requestRedraw()
+        }
+        withAnimation(.spring(duration: 0.4)) {
+            sceneObjects = objects.map(\.name)
+            focusName = nil
+        }
+        engine.animateCamera(to: OrbitCamera(), focus: 0, duration: 0.6)
+        if objects.count > 1 { toast("Сцена: \(objects.count) объектов — тапни деталь, чтобы рисовать на ней") }
+    }
+
+    func requestScene() { client.send(["type": "request_scene"]) }
+
+    func tapModel(at p: CGPoint) {
+        guard let mv = modelView, let aux = mv.auxTexture else { return }
+        let s = mv.contentScaleFactor
+        let id = engine.readAux(aux, x: Int(p.x * s), y: Int(p.y * s)).map { Int($0.w.rounded()) } ?? 0
+        let name = engine.objectName(forID: id)
+        if name == nil || (focusName != nil && name == focusName) {
+            if focusName != nil { unfocus() }
+            return
+        }
+        focus(name!)
+    }
+
+    func focus(_ name: String) {
+        UISelectionFeedbackGenerator().selectionChanged()
+        withAnimation(.spring(duration: 0.45, bounce: 0.25)) { focusName = name }
+        engine.focus(name)
+        if name != session?.object {
+            if engine.strokeActive { engine.cancelStroke() }
+            client.send(["type": "select_object", "name": name])
+        }
+    }
+
+    func unfocus() {
+        withAnimation(.spring(duration: 0.45, bounce: 0.2)) {
+            focusName = nil
+            noTextureObject = nil
+        }
+        engine.focus(nil)
+    }
+
+    func createTexture(size: Int) {
+        guard let n = noTextureObject else { return }
+        client.send(["type": "create_texture", "name": n, "size": size])
+        withAnimation { noTextureObject = nil }
     }
 
     func acceptRestore() {
@@ -756,7 +879,7 @@ final class AppModel {
         case .model:
             guard let mv = modelView, let aux = mv.auxTexture else { break }
             let s = mv.contentScaleFactor
-            if let a = engine.readAux(aux, x: Int(p.x * s), y: Int(p.y * s)), a.w > 0.5 {
+            if let a = engine.readAux(aux, x: Int(p.x * s), y: Int(p.y * s)), Int(a.w.rounded()) == engine.paintObjectID {
                 var u = a.x - floor(a.x), v = a.y - floor(a.y)
                 if u < 0 { u += 1 }
                 if v < 0 { v += 1 }
@@ -788,8 +911,11 @@ final class AppModel {
     }
 
     func resetCamera() {
-        engine.camera = OrbitCamera()
-        engine.requestRedraw()
+        if focusName != nil {
+            engine.focus(focusName)
+        } else {
+            engine.animateCamera(to: OrbitCamera(), focus: 0, duration: 0.55)
+        }
     }
 
     func fitCanvas() {

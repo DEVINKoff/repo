@@ -61,6 +61,25 @@ struct ContentView: View {
                 .glassEffect(.regular, in: .rect(cornerRadius: 28))
             }
 
+            VStack(spacing: 10) {
+                if let n = model.noTextureObject {
+                    NoTextureBanner(model: model, name: n)
+                        .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
+                }
+                if !model.sceneStatus.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(model.sceneStatus).font(.caption.monospacedDigit())
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .glassEffect(.regular, in: .capsule)
+                    .transition(.opacity)
+                }
+                Spacer()
+            }
+            .padding(.top, 76)
+            .animation(.spring(duration: 0.4), value: model.noTextureObject)
+
             if let offer = model.restoreOffer {
                 VStack {
                     RestoreBanner(model: model, meta: offer)
@@ -207,6 +226,72 @@ struct EmptyStateCard: View {
                 .frame(width: 22, height: 22)
                 .glassEffect(.regular.tint(.orange.opacity(0.5)), in: .circle)
             Text(text).font(.callout).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct NoTextureBanner: View {
+    @Bindable var model: AppModel
+    let name: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "photo.badge.plus").font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("У «\(name)» нет текстуры").font(.headline)
+                Text("Создать новую и рисовать на ней?").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach([1024, 2048, 4096], id: \.self) { s in
+                Button("\(s / 1024)K") { model.createTexture(size: s) }
+                    .buttonStyle(.glassProminent)
+            }
+            Button {
+                withAnimation { model.noTextureObject = nil }
+            } label: { Image(systemName: "xmark") }
+            .buttonStyle(.glass)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: .capsule)
+    }
+}
+
+struct ObjectsPanel: View {
+    @Bindable var model: AppModel
+    @State var query = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Button {
+                    model.unfocus()
+                    model.showObjects = false
+                } label: {
+                    Label("Вся модель", systemImage: "square.grid.3x3.fill")
+                }
+                ForEach(model.sceneObjects.filter { query.isEmpty || $0.localizedCaseInsensitiveContains(query) }, id: \.self) { n in
+                    Button {
+                        model.focus(n)
+                    } label: {
+                        HStack {
+                            Image(systemName: n == model.session?.object ? "paintbrush.pointed.fill" : "cube")
+                                .foregroundStyle(n == model.session?.object ? Color.accentColor : .secondary)
+                            Text(n).lineLimit(1)
+                            Spacer()
+                            if n == model.focusName { Image(systemName: "scope").foregroundStyle(Color.accentColor) }
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                }
+            }
+            .searchable(text: $query, prompt: "Поиск детали")
+            .navigationTitle("Объекты (\(model.sceneObjects.count))")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { model.requestScene() } label: { Image(systemName: "arrow.clockwise") }
+                }
+            }
         }
     }
 }
