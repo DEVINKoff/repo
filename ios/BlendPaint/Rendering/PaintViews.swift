@@ -135,7 +135,8 @@ class PaintInputView: MTKView, UIGestureRecognizerDelegate, UIPencilInteractionD
             }
             return RawSample(location: c.location(in: self), pressure: pressure,
                              altitude: c.type == .pencil ? Float(c.altitudeAngle) : .pi / 2,
-                             azimuth: c.type == .pencil ? Float(c.azimuthAngle(in: self)) : 0)
+                             azimuth: c.type == .pencil ? Float(c.azimuthAngle(in: self)) : 0,
+                             time: c.timestamp)
         }
     }
 

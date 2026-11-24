@@ -21,7 +21,7 @@ struct DabUniforms {
     var grainAmount: Float
     var grainScale: Float
     var tilesX: UInt32
-    var pad: UInt32 = 0
+    var grainMode: UInt32 = 0
 }
 
 struct ProjUniforms {

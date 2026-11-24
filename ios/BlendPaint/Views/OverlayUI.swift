@@ -336,20 +336,54 @@ struct BottomBar: View {
                     .buttonStyle(.glass)
                 }
 
-                Button {
-                    model.showWireframe.toggle()
-                    model.engine.requestRedraw()
+                Menu {
+                    Section("Оверлеи вьюпорта") {
+                        Toggle(isOn: $model.settings.showGrid) { Label("Сетка пола", systemImage: "grid") }
+                        Toggle(isOn: $model.settings.showAxes) { Label("Оси X / Y", systemImage: "arrow.up.and.down.and.arrow.left.and.right") }
+                        Toggle(isOn: $model.settings.showGizmo) { Label("Навигационный гизмо", systemImage: "move.3d") }
+                        Toggle(isOn: Binding(get: { model.showWireframe },
+                                             set: { model.showWireframe = $0; model.engine.requestRedraw() })) {
+                            Label("UV-сетка / каркас", systemImage: "squareshape.split.3x3")
+                        }
+                    }
                 } label: {
-                    Image(systemName: "squareshape.split.3x3")
+                    Image(systemName: "circle.grid.2x2")
                         .frame(width: 22, height: 22)
                 }
-                .glassButton(model.showWireframe)
+                .buttonStyle(.glass)
 
                 Menu {
-                    Picker("Свет", selection: $model.lighting) {
-                        ForEach(LightingPreset.allCases) { p in
-                            Label(p.title, systemImage: p.symbol).tag(p)
+                    Section("Material Preview (HDRI из Blender)") {
+                        ForEach(BlenderHDRI.allCases) { h in
+                            Button {
+                                model.settings.hdri = h
+                                model.lighting = .hdri
+                            } label: {
+                                if model.lighting == .hdri && model.settings.hdri == h {
+                                    Label(h.title, systemImage: "checkmark")
+                                } else {
+                                    Text(h.title)
+                                }
+                            }
                         }
+                    }
+                    Section("Другое освещение") {
+                        ForEach(LightingPreset.allCases.filter { $0 != .hdri }) { p in
+                            Button {
+                                model.lighting = p
+                            } label: {
+                                if model.lighting == p {
+                                    Label(p.title, systemImage: "checkmark")
+                                } else {
+                                    Label(p.title, systemImage: p.symbol)
+                                }
+                            }
+                        }
+                    }
+                    Section("Яркость мира") {
+                        Button("100%") { model.settings.envStrength = 1 }
+                        Button("75%") { model.settings.envStrength = 0.75 }
+                        Button("150%") { model.settings.envStrength = 1.5 }
                     }
                 } label: {
                     Image(systemName: model.lighting.symbol)

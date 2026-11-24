@@ -133,7 +133,7 @@ struct Workspace: View {
         case .canvas:
             CanvasViewRep(model: model)
         case .model:
-            ModelViewRep(model: model)
+            ModelViewport(model: model)
         case .split:
             GeometryReader { geo in
                 let w = geo.size.width
@@ -155,7 +155,7 @@ struct Workspace: View {
                                 model.splitFraction = max(0.2, min(0.8, v.location.x / max(w, 1)))
                             }
                     )
-                    ModelViewRep(model: model)
+                    ModelViewport(model: model)
                 }
             }
             .coordinateSpace(.named("split"))
@@ -361,4 +361,21 @@ struct ActivityView: UIViewControllerRepresentable {
         UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+/// 3D viewport with the Blender-style navigation gizmo on top.
+struct ModelViewport: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        ModelViewRep(model: model)
+            .overlay(alignment: model.settings.sidebarOnRight ? .topLeading : .topTrailing) {
+                if model.settings.showGizmo {
+                    NavGizmo(model: model)
+                        .padding(.top, 84)
+                        .padding(.horizontal, 18)
+                        .transition(.scale(scale: 0.5).combined(with: .opacity))
+                }
+            }
+    }
 }

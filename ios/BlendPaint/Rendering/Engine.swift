@@ -146,14 +146,15 @@ final class DisplayLinkProxy: NSObject {
 enum StrokeMode { case paint, erase }
 
 enum LightingPreset: Int, CaseIterable, Identifiable, Codable {
-    case studio, outdoor, unlit, clay
+    case studio = 0, outdoor, unlit, clay, hdri
     var id: Int { rawValue }
     var title: String {
         switch self {
-        case .studio: return "Студия"
-        case .outdoor: return "Улица"
+        case .studio: return "Студийные лампы"
+        case .outdoor: return "Солнце"
         case .unlit: return "Без света"
         case .clay: return "Глина"
+        case .hdri: return "HDRI Blender"
         }
     }
     var symbol: String {
@@ -162,8 +163,24 @@ enum LightingPreset: Int, CaseIterable, Identifiable, Codable {
         case .outdoor: return "sun.max"
         case .unlit: return "circle.lefthalf.filled"
         case .clay: return "cube"
+        case .hdri: return "globe.europe.africa"
         }
     }
+}
+
+/// Blender's bundled Material Preview HDRIs (CC0, Poly Haven)
+enum BlenderHDRI: String, CaseIterable, Identifiable, Codable {
+    case forest, city, courtyard, interior, night, studio, sunrise, sunset
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+struct GridUniforms {
+    var viewProj: simd_float4x4
+    var invViewProj: simd_float4x4
+    var camPos: SIMD4<Float>
+    var center: SIMD4<Float>
+    var params: SIMD4<Float>
 }
 
 /// What the 3D view hands to the engine for projection painting.
@@ -223,6 +240,12 @@ final class Engine {
     private var dilatePipeline: MTLComputePipelineState!
     private var meshDepth: MTLDepthStencilState!
     private var ghostPipeline: MTLRenderPipelineState!
+    private var gridPipeline: MTLRenderPipelineState!
+    private(set) var envTexture: MTLTexture?
+    private(set) var envName = ""
+    var envStrength: Float = 1
+    var showGrid = true
+    var showAxes = true
     private var ghostDepth: MTLDepthStencilState!
     private var bgDepth: MTLDepthStencilState!
 
@@ -411,6 +434,9 @@ final class Engine {
             d.colorAttachments[1].writeMask = []
             d.depthAttachmentPixelFormat = .depth32Float
             ghostPipeline = try device.makeRenderPipelineState(descriptor: d)
+            d.vertexFunction = library.makeFunction(name: "fullscreenVertex")
+            d.fragmentFunction = library.makeFunction(name: "gridFragment")
+            gridPipeline = try device.makeRenderPipelineState(descriptor: d)
         }
         let bd = MTLDepthStencilDescriptor()
         bd.depthCompareFunction = .always
@@ -720,7 +746,7 @@ final class Engine {
             return SIMD4(d.x, d.y, d.z, 0)
         }
         switch lighting {
-        case .studio, .clay, .unlit:
+        case .studio, .clay, .unlit, .hdri:
             u.light0Dir = camDir(-0.55, 0.75, 0.6)
             u.light0Color = SIMD4(2.7, 2.6, 2.45, 0)
             u.light1Dir = camDir(0.8, 0.3, -0.5)
@@ -735,7 +761,8 @@ final class Engine {
             u.skyTop = SIMD4(0.33, 0.5, 0.9, 0)
             u.skyBottom = SIMD4(0.2, 0.17, 0.13, 0)
         }
-        u.lighting = UInt32(lighting.rawValue)
+        u.lighting = UInt32(lighting == .hdri && envTexture == nil ? LightingPreset.studio.rawValue : lighting.rawValue)
+        u.params2.w = envStrength
     }
 
     // MARK: - runtime material programs
@@ -908,6 +935,7 @@ final class Engine {
         for i in 0..<12 {
             enc.setFragmentTexture(i < p.textures.count ? textureForProgram(p.textures[i]) : whiteTexture!, index: i)
         }
+        enc.setFragmentTexture(envTexture ?? whiteTexture!, index: 12)
         for r in ranges where r.1 > 0 {
             u.neutral = r.2 ? 1 : 0
             enc.setVertexBytes(&u, length: MemoryLayout<MeshUniforms>.stride, index: 4)
@@ -1007,6 +1035,8 @@ final class Engine {
                 encodeSimpleMesh(enc, m, u)
             }
         }
+
+        encodeGrid(enc, viewProj: u.viewProj)
 
         if !ghosts.isEmpty, let sc = scene {
             u.model = sc.model
@@ -1140,7 +1170,11 @@ final class Engine {
     }
 
     func animateCamera(to c: OrbitCamera, focus f: Float, duration: Double = 0.7) {
-        anim = (CACurrentMediaTime(), duration, camera, c, focusAmount, f)
+        var to = c
+        // shortest way around for the yaw
+        while to.yaw - camera.yaw > .pi { to.yaw -= 2 * .pi }
+        while to.yaw - camera.yaw < -.pi { to.yaw += 2 * .pi }
+        anim = (CACurrentMediaTime(), duration, camera, to, focusAmount, f)
         if link == nil {
             let proxy = DisplayLinkProxy { [weak self] in self?.stepAnimation() }
             let l = CADisplayLink(target: proxy, selector: #selector(DisplayLinkProxy.tick))
@@ -1174,6 +1208,49 @@ final class Engine {
             link = nil
             linkProxy = nil
         }
+    }
+
+    // MARK: - environment (HDRI)
+
+    func loadEnvironment(_ hdri: BlenderHDRI) {
+        guard hdri.rawValue != envName,
+              let url = Bundle.main.url(forResource: hdri.rawValue, withExtension: "hdr16"),
+              let data = try? Data(contentsOf: url), data.count > 12 else { return }
+        let w = Int(data[4]) | Int(data[5]) << 8 | Int(data[6]) << 16 | Int(data[7]) << 24
+        let h = Int(data[8]) | Int(data[9]) << 8 | Int(data[10]) << 16 | Int(data[11]) << 24
+        guard w > 0, h > 0, data.count >= 12 + w * h * 8,
+              let tex = makeTexture(.rgba16Float, w, h, [.shaderRead], mipmapped: true),
+              let cmd = queue.makeCommandBuffer() else { return }
+        let pixels = data.subdata(in: (data.startIndex + 12)..<(data.startIndex + 12 + w * h * 8))
+        guard let buf = makeBuffer(pixels), let blit = cmd.makeBlitCommandEncoder() else { return }
+        blit.copy(from: buf, sourceOffset: 0, sourceBytesPerRow: w * 8, sourceBytesPerImage: w * h * 8,
+                  sourceSize: MTLSize(width: w, height: h, depth: 1), to: tex, destinationSlice: 0,
+                  destinationLevel: 0, destinationOrigin: MTLOrigin())
+        blit.generateMipmaps(for: tex)
+        blit.endEncoding()
+        cmd.commit()
+        envTexture = tex
+        envName = hdri.rawValue
+        requestRedraw()
+    }
+
+    private func encodeGrid(_ enc: MTLRenderCommandEncoder, viewProj: simd_float4x4) {
+        guard showGrid || showAxes else { return }
+        let model: simd_float4x4
+        if let sc = scene { model = sc.model } else if let m = mesh { model = m.model } else { return }
+        let s = model.columns.0.x
+        guard s > 0 else { return }
+        let c3 = model.columns.3
+        let center = -SIMD3(c3.x, c3.y, c3.z) / s
+        let eye = camera.eye
+        var g = GridUniforms(viewProj: viewProj, invViewProj: viewProj.inverse,
+                             camPos: SIMD4(eye.x, eye.y, eye.z, 1),
+                             center: SIMD4(center.x, center.y, center.z, s),
+                             params: SIMD4(-center.z * s, 1, camera.distance / s, (showAxes ? 1 : 0) + (showGrid ? 2 : 0)))
+        enc.setRenderPipelineState(gridPipeline)
+        enc.setDepthStencilState(ghostDepth)
+        enc.setFragmentBytes(&g, length: MemoryLayout<GridUniforms>.stride, index: 0)
+        enc.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
     }
 
     // MARK: - composite
@@ -1294,7 +1371,8 @@ final class Engine {
     private func dabUniforms() -> DabUniforms {
         DabUniforms(targetSize: SIMD2(Float(width), Float(height)), hardness: strokeBrush.hardness,
                     shape: UInt32(strokeBrush.shape.rawValue), grainAmount: strokeBrush.grain,
-                    grainScale: strokeBrush.grainScale, tilesX: UInt32(tilesX))
+                    grainScale: strokeBrush.grainScale, tilesX: UInt32(tilesX),
+                    grainMode: UInt32(strokeBrush.grainMode.rawValue))
     }
 
     func addDabs2D(_ dabs: [GPUDab]) {
@@ -1361,7 +1439,8 @@ final class Engine {
                                  hardness: strokeBrush.hardness, shape: UInt32(strokeBrush.shape.rawValue),
                                  grainAmount: strokeBrush.grain, grainScale: strokeBrush.grainScale,
                                  dabCount: UInt32(part.count), tilesX: UInt32(tilesX),
-                                 flags: (occlusion ? 1 : 0) | (paintBackfaces ? 2 : 0), facingFade: facingFade)
+                                 flags: (occlusion ? 1 : 0) | (paintBackfaces ? 2 : 0), facingFade: facingFade,
+                                 pad0: Float(strokeBrush.grainMode.rawValue))
             enc.setVertexBytes(&u, length: MemoryLayout<ProjUniforms>.stride, index: 3)
             enc.setFragmentBytes(&u, length: MemoryLayout<ProjUniforms>.stride, index: 3)
             part.withUnsafeBytes { raw in
@@ -1471,6 +1550,15 @@ final class Engine {
             markDirty(x0: Float(bbMin.x), y0: Float(bbMin.y), x1: Float(bbMax.x), y1: Float(bbMax.y))
         }
         scheduleThumbnail(layer)
+        requestRedraw()
+    }
+
+    /// wipe the current (not yet merged) stroke and keep going — used by QuickShape
+    func restartStroke() {
+        guard strokeActive, let stroke, let cmd = queue.makeCommandBuffer() else { return }
+        clear(cmd, stroke)
+        cmd.commit()
+        markDirtyFull()
         requestRedraw()
     }
 

@@ -1,5 +1,5 @@
 #define BP_ALPHA 1
-// BP_TEMPLATE_ABI 2
+// BP_TEMPLATE_ABI 3
 #include <metal_stdlib>
 using namespace metal;
 
@@ -510,9 +510,37 @@ static float3 skyColor(float3 dir, constant MeshUniforms& u) {
     return mix(u.skyBottom.rgb, u.skyTop.rgb, smoothstep(0.0, 1.0, t));
 }
 
-static float3 tonemap(float3 x) {
-    x *= 0.8;
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+static float3 agxContrast(float3 x) {
+    float3 x2 = x * x;
+    float3 x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+// Blender's default view transform (AgX), minimal fitted version; input/output linear sRGB
+static float3 tonemap(float3 c) {
+    const float3x3 m = float3x3(float3(0.842479062253094, 0.0423282422610123, 0.0423756549057051),
+                                float3(0.0784335999999992, 0.878468636469772, 0.0784336),
+                                float3(0.0792237451477643, 0.0791661274605434, 0.879142973793104));
+    const float3x3 mi = float3x3(float3(1.19687900512017, -0.0528968517574562, -0.0529716355144438),
+                                 float3(-0.0980208811401368, 1.15190312990417, -0.0980434501171241),
+                                 float3(-0.0990297440797205, -0.0989611768448433, 1.15107367264116));
+    const float minEv = -12.47393, maxEv = 4.026069;
+    float3 v = m * max(c, float3(1e-10));
+    v = clamp(log2(v), minEv, maxEv);
+    v = (v - minEv) / (maxEv - minEv);
+    v = agxContrast(v);
+    v = mi * v;
+    return pow(max(v, float3(0.0)), float3(2.2));
+}
+
+// Blender Material Preview: studio HDRI locked to the view (World Space Lighting off)
+static float3 envSample(texture2d<float> env, float3 dirW, float lod, constant MeshUniforms& u) {
+    constexpr sampler es(filter::linear, mip_filter::linear, s_address::repeat, t_address::clamp_to_edge);
+    float3 d = (u.view * float4(dirW, 0.0)).xyz;
+    float3 b = float3(d.x, -d.z, d.y);
+    float uu = -atan2(b.y, b.x) / (2.0 * M_PI_F) + 0.5;
+    float vv = atan2(b.z, length(b.xy)) / M_PI_F + 0.5;
+    return env.sample(es, float2(uu, 1.0 - vv), level(lod)).rgb * u.params2.w;
 }
 
 static float hashPix(float2 p) {
@@ -556,7 +584,8 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
                            bool front [[front_facing]],
                            constant MeshUniforms& u [[buffer(4)]],
                            constant float* MP [[buffer(12)]],
-                           array<texture2d<float>, 12> tex [[texture(0)]]) {
+                           array<texture2d<float>, 12> tex [[texture(0)]],
+                           texture2d<float> envTex [[texture(12)]]) {
     MFOut o;
     o.aux = float4(in.uvA, in.viewDepth, float(u.pad1));      // w = object id
 
@@ -644,6 +673,26 @@ fragment MFOut matFragment(MVOut in [[stage_in]],
     float coatF = coat * F_Schlick(float3(0.04), max(dot(coatN, V), 1e-4)).x;
 
     float3 color = float3(0.0);
+    if (u.lighting == 4) {
+        // image-based lighting from Blender's studio HDRIs
+        float maxLod = float(envTex.get_num_mip_levels()) - 1.0;
+        float3 Rv = reflect(-V, Nn);
+        float3 irr = envSample(envTex, Nn, maxLod - 1.0, u);
+        float3 spec = envSample(envTex, Rv, sqrt(roughness) * (maxLod - 1.5), u);
+        float3 Fe = f0 + (max(float3(1.0 - roughness), f0) - f0) * pow(1.0 - NdV, 5.0);
+        color = diffuseColor * irr + spec * Fe;
+        if (trans > 0.0) {
+            color += trans * base * envSample(envTex, -V, roughness * (maxLod - 2.0), u);
+        }
+        if (coat > 0.0) {
+            float3 cR = reflect(-V, coatN);
+            color = color * (1.0 - coatF) + envSample(envTex, cR, sqrt(ca) * (maxLod - 1.5), u) * coatF;
+        }
+        color += s.emission;
+        color += float3(1.0, 0.62, 0.25) * pow(1.0 - NdV, 2.0) * u.params2.z * 2.0;
+        o.color = float4(tonemap(color * u.params2.y), 1.0);
+        return o;
+    }
     for (int i = 0; i < 2; i++) {
         float3 L = normalize(i == 0 ? u.light0Dir.xyz : u.light1Dir.xyz);
         float3 lc = i == 0 ? u.light0Color.rgb : u.light1Color.rgb;

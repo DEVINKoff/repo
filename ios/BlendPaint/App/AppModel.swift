@@ -68,7 +68,15 @@ struct SessionInfo: Equatable {
 
 struct AppSettings: Codable, Equatable {
     var fingerPainting = false
-    var pressureGamma: Double = 0.65
+    var pressureCurve: [Double] = [0, 0, 0.35, 0.5, 1, 1]   // control points x,y (Procreate-like soft curve)
+    var pressureSmoothing: Double = 0.25
+    var quickShape = true
+    var quickShapeDelay: Double = 0.55
+    var showGrid = true
+    var showAxes = true
+    var showGizmo = true
+    var hdri: BlenderHDRI = .forest
+    var envStrength: Double = 1
     var occlusion = true
     var paintBackfaces = false
     var facingFade: Double = 0.15
@@ -90,6 +98,7 @@ struct RawSample {
     var pressure: Float
     var altitude: Float
     var azimuth: Float
+    var time: Double = 0
 }
 
 struct CanvasTransform {
@@ -189,7 +198,7 @@ final class AppModel {
     // view
     var viewMode: ViewMode = .split
     var showWireframe = true
-    var lighting: LightingPreset = .studio { didSet { engine.lighting = lighting; engine.requestRedraw() } }
+    var lighting: LightingPreset = .hdri { didSet { engine.lighting = lighting; engine.requestRedraw() } }
     var uiHidden = false
     var splitFraction: CGFloat = 0.5
     var toasts: [Toast] = []
@@ -248,16 +257,21 @@ final class AppModel {
     // MARK: - persistence
 
     private func loadSettings() {
-        if let d = UserDefaults.standard.data(forKey: "settings.v2"), let s = try? JSONDecoder().decode(AppSettings.self, from: d) {
+        if let d = UserDefaults.standard.data(forKey: "settings.v3"), let s = try? JSONDecoder().decode(AppSettings.self, from: d) {
             settings = s
         }
     }
 
     private func saveSettings() {
-        if let d = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(d, forKey: "settings.v2") }
+        if let d = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(d, forKey: "settings.v3") }
     }
 
     private func applySettings() {
+        pressureLUT = PressureCurve.lut(settings.pressureCurve)
+        engine.showGrid = settings.showGrid
+        engine.showAxes = settings.showAxes
+        engine.envStrength = Float(settings.envStrength)
+        engine.loadEnvironment(settings.hdri)
         engine.occlusion = settings.occlusion
         engine.paintBackfaces = settings.paintBackfaces
         engine.facingFade = Float(settings.facingFade)
@@ -275,7 +289,7 @@ final class AppModel {
     }
 
     private func loadBrushes() {
-        if let d = UserDefaults.standard.data(forKey: "brushes.v1"), let b = try? JSONDecoder().decode([BrushSettings].self, from: d), !b.isEmpty {
+        if let d = UserDefaults.standard.data(forKey: "brushes.v2"), let b = try? JSONDecoder().decode([BrushSettings].self, from: d), !b.isEmpty {
             brushes = b
         } else {
             brushes = BrushSettings.defaults
@@ -288,12 +302,12 @@ final class AppModel {
         if let s = UserDefaults.standard.string(forKey: "eraserID"), let u = UUID(uuidString: s), brushes.contains(where: { $0.id == u }) {
             eraserBrushID = u
         } else {
-            eraserBrushID = brushes[min(6, brushes.count - 1)].id
+            eraserBrushID = (brushes.first { $0.name == "Мягкая кисть" } ?? brushes[min(8, brushes.count - 1)]).id
         }
     }
 
     func saveBrushes() {
-        if let d = try? JSONEncoder().encode(brushes) { UserDefaults.standard.set(d, forKey: "brushes.v1") }
+        if let d = try? JSONEncoder().encode(brushes) { UserDefaults.standard.set(d, forKey: "brushes.v2") }
         UserDefaults.standard.set(brushID.uuidString, forKey: "brushID")
         UserDefaults.standard.set(eraserBrushID.uuidString, forKey: "eraserID")
     }
@@ -821,6 +835,7 @@ final class AppModel {
     // MARK: - tick / sync
 
     private func tick() {
+        checkQuickShape()
         let interval = 1.0 / max(settings.syncFPS, 1)
         guard Date().timeIntervalSince(lastSync) >= interval else { return }
         lastSync = Date()
@@ -851,17 +866,19 @@ final class AppModel {
 
     // MARK: - input
 
+    @ObservationIgnored private var pressureLUT: [Float] = PressureCurve.lut(PressureCurve.linear)
+
     private func convert(_ r: RawSample, kind: ViewKind, scale: CGFloat) -> StrokeSample {
-        let pr = Float(pow(Double(max(0, min(1, r.pressure))), settings.pressureGamma))
+        let pr = PressureCurve.eval(pressureLUT, max(0, min(1, r.pressure)))
         let tilt = max(0, min(1, 1 - r.altitude / (.pi / 2)))
         switch kind {
         case .canvas:
             let c = canvasTransform.toCanvas(r.location)
             return StrokeSample(p: SIMD2(Float(c.x), Float(c.y)), pressure: pr, tilt: tilt,
-                                azimuth: r.azimuth - Float(canvasTransform.rotation))
+                                azimuth: r.azimuth - Float(canvasTransform.rotation), time: r.time)
         case .model:
             return StrokeSample(p: SIMD2(Float(r.location.x * scale), Float(r.location.y * scale)), pressure: pr,
-                                tilt: tilt, azimuth: r.azimuth)
+                                tilt: tilt, azimuth: r.azimuth, time: r.time)
         }
     }
 
@@ -876,6 +893,28 @@ final class AppModel {
 
     var isStroking: Bool { builder != nil }
 
+    // QuickShape state
+    private enum ShapeMode {
+        case none, line(SIMD2<Float>), ellipse
+        var isNone: Bool { if case .none = self { return true } else { return false } }
+    }
+    @ObservationIgnored private var strokeSamples: [StrokeSample] = []
+    @ObservationIgnored private var strokeBrush: BrushSettings?
+    @ObservationIgnored private var strokeRadius: Float = 1
+    @ObservationIgnored private var lastMoveTime = CACurrentMediaTime()
+    @ObservationIgnored private var lastMovePoint = CGPoint.zero
+    @ObservationIgnored private var shapeMode: ShapeMode = .none
+
+    /// per-stroke color dynamics
+    private func jitteredColor(_ b: BrushSettings) -> SIMD4<Float> {
+        guard b.hueJitter > 0 || b.satJitter > 0 || b.brightJitter > 0 else { return color.rgba }
+        var c = color
+        c.h = (c.h + Double.random(in: -0.5...0.5) * Double(b.hueJitter) + 1).truncatingRemainder(dividingBy: 1)
+        c.s = max(0, min(1, c.s + Double.random(in: -0.5...0.5) * Double(b.satJitter)))
+        c.b = max(0, min(1, c.b + Double.random(in: -0.5...0.5) * Double(b.brightJitter)))
+        return c.rgba
+    }
+
     func strokeBegan(_ kind: ViewKind, _ samples: [RawSample], scale: CGFloat) {
         guard engine.hasDocument, let first = samples.first else { return }
         if tool == .eyedropper {
@@ -884,9 +923,15 @@ final class AppModel {
         }
         let b = activeBrush
         let radius: Float = kind == .canvas ? b.radius2D(textureMax: max(engine.width, engine.height)) : b.radius3D() * Float(scale)
-        builder = StrokeBuilder(brush: b, baseRadius: radius)
+        builder = StrokeBuilder(brush: b, baseRadius: radius, pressureSmoothing: Float(settings.pressureSmoothing))
+        strokeBrush = b
+        strokeRadius = radius
         strokeKind = kind
-        engine.beginStroke(brush: b, mode: tool == .eraser ? .erase : .paint, color: color.rgba, is3D: kind == .model)
+        strokeSamples = []
+        shapeMode = .none
+        lastMoveTime = CACurrentMediaTime()
+        lastMovePoint = first.location
+        engine.beginStroke(brush: b, mode: tool == .eraser ? .erase : .paint, color: jitteredColor(b), is3D: kind == .model)
         strokeMoved(samples, scale: scale)
         if tool == .brush { pushHistory() }
     }
@@ -896,10 +941,29 @@ final class AppModel {
             if tool == .eyedropper, let l = samples.last { eyedrop(lastEyedropKind, at: l.location) }
             return
         }
+        if let l = samples.last, hypot(l.location.x - lastMovePoint.x, l.location.y - lastMovePoint.y) > 4 {
+            lastMovePoint = l.location
+            lastMoveTime = CACurrentMediaTime()
+        }
+        switch shapeMode {
+        case .line(let start):
+            // after QuickShape snapped to a line, keep dragging its end point
+            if let l = samples.last {
+                let s = convert(l, kind: strokeKind, scale: scale)
+                lastRaw = s
+                drawShape(points: [start, s.p], closed: false)
+            }
+            return
+        case .ellipse:
+            return
+        case .none:
+            break
+        }
         var dabs: [GPUDab] = []
         for r in samples {
             let s = convert(r, kind: strokeKind, scale: scale)
             lastRaw = s
+            strokeSamples.append(s)
             dabs += builder.add(s)
         }
         submit(dabs)
@@ -917,10 +981,12 @@ final class AppModel {
 
     func strokeEnded() {
         guard let builder else { return }
-        submit(builder.finish(at: lastRaw))
+        submit(builder.finish(at: shapeMode.isNone ? lastRaw : nil))
         engine.endStroke()
         self.builder = nil
         lastRaw = nil
+        shapeMode = .none
+        strokeSamples = []
         documentDirty = true
         refreshLayers()
     }
@@ -930,6 +996,92 @@ final class AppModel {
         engine.cancelStroke()
         builder = nil
         lastRaw = nil
+        shapeMode = .none
+        strokeSamples = []
+    }
+
+    // MARK: - QuickShape (hold the pen at the end of a stroke)
+
+    private func checkQuickShape() {
+        guard settings.quickShape, builder != nil, shapeMode.isNone, tool != .eyedropper,
+              strokeSamples.count > 8, CACurrentMediaTime() - lastMoveTime > settings.quickShapeDelay else { return }
+        let pts = strokeSamples.map(\.p)
+        var mn = pts[0], mx = pts[0]
+        var pathLen: Float = 0
+        for i in 1..<pts.count {
+            mn = simd_min(mn, pts[i]); mx = simd_max(mx, pts[i])
+            pathLen += simd_length(pts[i] - pts[i - 1])
+        }
+        let size = max(mx.x - mn.x, mx.y - mn.y)
+        guard size > strokeRadius * 3 else { return }
+        let closed = simd_length(pts[pts.count - 1] - pts[0]) < size * 0.22 && pathLen > size * 2
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if closed {
+            // principal axes → ellipse
+            let mean = pts.reduce(SIMD2<Float>.zero, +) / Float(pts.count)
+            var cxx: Float = 0, cyy: Float = 0, cxy: Float = 0
+            for p in pts { let d = p - mean; cxx += d.x * d.x; cyy += d.y * d.y; cxy += d.x * d.y }
+            let n = Float(pts.count)
+            cxx /= n; cyy /= n; cxy /= n
+            let tr = cxx + cyy, det = cxx * cyy - cxy * cxy
+            let disc = sqrt(max(tr * tr / 4 - det, 0))
+            let l1 = tr / 2 + disc, l2 = max(tr / 2 - disc, 0)
+            let ang = 0.5 * atan2(2 * cxy, cxx - cyy)
+            let a = sqrt(2 * l1), b = sqrt(2 * l2)
+            let circ = Float.pi * (3 * (a + b) - sqrt((3 * a + b) * (a + 3 * b)))
+            let steps = max(24, Int(circ / max(strokeRadius * 0.6, 1)))
+            var ring: [SIMD2<Float>] = []
+            for i in 0...steps {
+                let t = Float(i) / Float(steps) * 2 * .pi
+                let lx = cos(t) * a, ly = sin(t) * b
+                ring.append(mean + SIMD2(lx * cos(ang) - ly * sin(ang), lx * sin(ang) + ly * cos(ang)))
+            }
+            shapeMode = .ellipse
+            drawShape(points: ring, closed: true)
+            toast("QuickShape: эллипс")
+        } else {
+            shapeMode = .line(pts[0])
+            drawShape(points: [pts[0], pts[pts.count - 1]], closed: false)
+            toast("QuickShape: линия — веди, чтобы двигать конец")
+        }
+    }
+
+    private func drawShape(points: [SIMD2<Float>], closed: Bool) {
+        guard var b = strokeBrush else { return }
+        b.streamline = 0
+        b.stabilization = 0
+        b.motionFilter = 0
+        let avgP = strokeSamples.isEmpty ? 1 : strokeSamples.map(\.pressure).reduce(0, +) / Float(strokeSamples.count)
+        let tilt = strokeSamples.last?.tilt ?? 0
+        let az = strokeSamples.last?.azimuth ?? 0
+        let nb = StrokeBuilder(brush: b, baseRadius: strokeRadius, pressureSmoothing: 0)
+        engine.restartStroke()
+        var dabs: [GPUDab] = []
+        var t: Double = 0
+        for (i, p) in points.enumerated() {
+            // line: a gentle pressure swell; ellipse: constant
+            let u = points.count > 1 ? Float(i) / Float(points.count - 1) : 0
+            let pr = closed ? avgP : avgP * (0.85 + 0.15 * sin(u * .pi))
+            dabs += nb.add(StrokeSample(p: p, pressure: pr, tilt: tilt, azimuth: az, time: t))
+            t += 0.004
+        }
+        if points.count == 2 {
+            // resample the straight line so every spacing step is drawn
+            dabs = []
+            let nb2 = StrokeBuilder(brush: b, baseRadius: strokeRadius, pressureSmoothing: 0)
+            let steps = 24
+            for i in 0...steps {
+                let f = Float(i) / Float(steps)
+                dabs += nb2.add(StrokeSample(p: points[0] + (points[1] - points[0]) * f, pressure: avgP, tilt: tilt,
+                                             azimuth: az, time: Double(i) * 0.004))
+            }
+            dabs += nb2.finish(at: nil)
+            builder = nb2
+        } else {
+            dabs += nb.finish(at: nil)
+            builder = nb
+        }
+        submit(dabs)
     }
 
     // MARK: - eyedropper
@@ -977,6 +1129,21 @@ final class AppModel {
             withAnimation(.easeOut(duration: 0.3)) { self?.toasts.removeAll { $0.id == t.id } }
         }
     }
+
+    func snapView(yaw: Float, pitch: Float) {
+        var c = engine.camera
+        c.yaw = yaw
+        c.pitch = pitch
+        engine.animateCamera(to: c, focus: engine.focusAmount, duration: 0.45)
+    }
+
+    func orbitView(dx: Float, dy: Float) {
+        engine.camera.yaw -= dx * 0.012
+        engine.camera.pitch = max(-1.55, min(1.55, engine.camera.pitch + dy * 0.012))
+        engine.requestRedraw()
+    }
+
+    func applyPressureCurve(_ x: Float) -> Float { PressureCurve.eval(pressureLUT, x) }
 
     func resetCamera() {
         if focusName != nil {

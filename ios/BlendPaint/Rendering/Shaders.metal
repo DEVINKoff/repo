@@ -21,7 +21,7 @@ struct DabUniforms {
     float grainAmount;
     float grainScale;
     uint tilesX;
-    uint pad;
+    uint grainMode;      // 0 texturized (canvas space), 1 moving (follows the dab)
 };
 
 struct ProjUniforms {
@@ -240,7 +240,8 @@ fragment float4 dabFragment(DabVOut in [[stage_in]],
     float a = dabCoverage(in.local, in.radius, u.hardness, u.shape, in.seed) * in.alpha;
     if (u.grainAmount > 0.0) {
         constexpr sampler gs(filter::linear, address::repeat);
-        float g = grain.sample(gs, in.position.xy / (256.0 * max(u.grainScale, 0.05))).r;
+        float2 gp = u.grainMode == 1 ? in.local * in.radius : in.position.xy;
+        float g = grain.sample(gs, gp / (256.0 * max(u.grainScale, 0.05))).r;
         a *= mix(1.0, g, u.grainAmount);
     }
     float cur = dst.r;
@@ -304,7 +305,9 @@ fragment float4 projFragment(ProjVOut in [[stage_in]],
         }
     }
     float g = 1.0;
-    if (u.grainAmount > 0.0) {
+    bool movingGrain = u.pad0 > 0.5;
+    constexpr sampler gsm(filter::linear, address::repeat);
+    if (u.grainAmount > 0.0 && !movingGrain) {
         constexpr sampler gs(filter::linear, address::repeat);
         g = mix(1.0, grain.sample(gs, sp / (256.0 * max(u.grainScale, 0.05))).r, u.grainAmount);
     }
@@ -322,7 +325,11 @@ fragment float4 projFragment(ProjVOut in [[stage_in]],
         if (dot(l, l) > 1.2) {
             continue;
         }
-        float t = dabCoverage(l, d.radius, u.hardness, u.shape, d.seed) * d.alpha * g;
+        float gm = 1.0;
+        if (movingGrain && u.grainAmount > 0.0) {
+            gm = mix(1.0, grain.sample(gsm, q / (256.0 * max(u.grainScale, 0.05))).r, u.grainAmount);
+        }
+        float t = dabCoverage(l, d.radius, u.hardness, u.shape, d.seed) * d.alpha * g * gm;
         if (t > cur) {
             cur += (t - cur) * clamp(d.flow, 0.0, 1.0);
         }
@@ -541,10 +548,27 @@ static float3 skyColor(float3 dir, constant MeshUniforms& u) {
     return mix(u.skyBottom.rgb, u.skyTop.rgb, smoothstep(0.0, 1.0, t));
 }
 
-static float3 tonemap(float3 x) {
-    // ACES fitted (Narkowicz)
-    x *= 0.8;
-    return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
+static float3 agxContrast(float3 x) {
+    float3 x2 = x * x;
+    float3 x4 = x2 * x2;
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232;
+}
+
+// Blender's default view transform (AgX), minimal fitted version; input/output linear sRGB
+static float3 tonemap(float3 c) {
+    const float3x3 m = float3x3(float3(0.842479062253094, 0.0423282422610123, 0.0423756549057051),
+                                float3(0.0784335999999992, 0.878468636469772, 0.0784336),
+                                float3(0.0792237451477643, 0.0791661274605434, 0.879142973793104));
+    const float3x3 mi = float3x3(float3(1.19687900512017, -0.0528968517574562, -0.0529716355144438),
+                                 float3(-0.0980208811401368, 1.15190312990417, -0.0980434501171241),
+                                 float3(-0.0990297440797205, -0.0989611768448433, 1.15107367264116));
+    const float minEv = -12.47393, maxEv = 4.026069;
+    float3 v = m * max(c, float3(1e-10));
+    v = clamp(log2(v), minEv, maxEv);
+    v = (v - minEv) / (maxEv - minEv);
+    v = agxContrast(v);
+    v = mi * v;
+    return pow(max(v, float3(0.0)), float3(2.2));
 }
 
 fragment MeshFOut meshFragment(MeshVOut in [[stage_in]],
@@ -671,12 +695,85 @@ struct BgOut {
     float4 aux [[color(1)]];
 };
 
+static float3 srgbToLin(float3 c) {
+    return select(pow((c + 0.055) / 1.055, float3(2.4)), c / 12.92, c <= 0.04045);
+}
+
+// Blender theme viewport gradient (#3D3D3D → #303030) with a soft vignette
 fragment BgOut backgroundFragment(FSOut in [[stage_in]], constant MeshUniforms& u [[buffer(4)]]) {
     BgOut o;
-    float t = in.uv.y;
-    float3 top = float3(0.11, 0.115, 0.13);
-    float3 bottom = float3(0.035, 0.037, 0.045);
-    o.color = float4(mix(top, bottom, t), 1.0);
+    float3 top = float3(61.0 / 255.0);
+    float3 bottom = float3(43.0 / 255.0);
+    float3 c = mix(top, bottom, smoothstep(0.0, 1.0, in.uv.y));
+    float2 q = in.uv - 0.5;
+    c *= 1.0 - 0.18 * smoothstep(0.35, 0.95, length(q * float2(1.15, 1.0)));
+    float n = fract(sin(dot(in.position.xy, float2(12.9898, 78.233))) * 43758.5453);
+    c += (n - 0.5) / 255.0;                         // dither: no banding in the gradient
+    o.color = float4(srgbToLin(c), 1.0);
     o.aux = float4(0.0);
+    return o;
+}
+
+struct GridUniforms {
+    float4x4 viewProj;
+    float4x4 invViewProj;
+    float4 camPos;       // normalized space
+    float4 center;       // xyz: Blender-space scene center, w: scale (blender -> normalized)
+    float4 params;       // x: plane z (normalized), y: opacity, z: camera distance (blender units), w: axes
+};
+
+struct GridOut {
+    float4 color [[color(0)]];
+    float depth [[depth(any)]];
+};
+
+static float gridLine(float2 p, float step) {
+    float2 c = p / step;
+    float2 w = fwidth(c);
+    float2 g = fabs(fract(c - 0.5) - 0.5) / max(w, float2(1e-6));
+    return 1.0 - min(min(g.x, g.y), 1.0);
+}
+
+// Blender-style infinite floor grid with red X / green Y axes and level-of-detail fading
+fragment GridOut gridFragment(FSOut in [[stage_in]], constant GridUniforms& g [[buffer(0)]]) {
+    float2 ndc = float2(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    float4 n4 = g.invViewProj * float4(ndc, 0.0, 1.0);
+    float4 f4 = g.invViewProj * float4(ndc, 1.0, 1.0);
+    float3 nearP = n4.xyz / n4.w, farP = f4.xyz / f4.w;
+    float3 dir = farP - nearP;
+    if (fabs(dir.z) < 1e-6) discard_fragment();
+    float t = (g.params.x - nearP.z) / dir.z;
+    if (t <= 0.0 || t >= 1.0) discard_fragment();
+    float3 P = nearP + dir * t;
+    float scale = g.center.w;
+    float2 pb = P.xy / scale + g.center.xy;          // Blender units
+
+    float lvl = log10(max(g.params.z, 1e-4)) - 1.0;
+    float s0 = pow(10.0, floor(lvl));
+    float f = fract(lvl);
+    bool lines = g.params.w >= 1.5;
+    bool axes = fmod(g.params.w, 2.0) > 0.5;
+    float a = 0.0;
+    if (lines) {
+        a = max(gridLine(pb, s0) * (1.0 - f) * 0.5, gridLine(pb, s0 * 10.0) * 0.75);
+        a = max(a, gridLine(pb, s0 * 100.0) * 0.9 * f);
+    }
+
+    float3 col = srgbToLin(float3(0.36));
+    if (axes) {
+        float ax = 1.0 - min(fabs(pb.y) / max(fwidth(pb.y), 1e-7) / 1.3, 1.0);
+        float ay = 1.0 - min(fabs(pb.x) / max(fwidth(pb.x), 1e-7) / 1.3, 1.0);
+        if (ax > 0.0) { col = mix(col, srgbToLin(float3(1.0, 0.2, 0.32)), ax); a = max(a, ax); }
+        if (ay > 0.0) { col = mix(col, srgbToLin(float3(0.545, 0.863, 0.0)), ay); a = max(a, ay); }
+    }
+    float dist = length(P - g.camPos.xyz);
+    float fade = 1.0 - smoothstep(2.0, 9.0, dist / max(g.params.z * scale, 1e-4));
+    fade *= smoothstep(0.0, 0.22, fabs(normalize(dir).z));
+    a *= fade * g.params.y;
+    if (a <= 0.002) discard_fragment();
+    float4 clip = g.viewProj * float4(P, 1.0);
+    GridOut o;
+    o.color = float4(col * a, a);
+    o.depth = clip.z / clip.w;
     return o;
 }

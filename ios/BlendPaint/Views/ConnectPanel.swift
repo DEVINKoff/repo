@@ -110,17 +110,56 @@ struct SettingsPanel: View {
             Form {
                 Section("Ввод") {
                     Toggle("Рисовать пальцем", isOn: $model.settings.fingerPainting)
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Text("Кривая нажатия")
-                            Spacer()
-                            Text(model.settings.pressureGamma < 0.9 ? "мягче" : model.settings.pressureGamma > 1.1 ? "жёстче" : "линейная")
-                                .foregroundStyle(.secondary)
-                        }
-                        Slider(value: $model.settings.pressureGamma, in: 0.4...2.5)
-                    }
                     Toggle("Показывать контур кисти", isOn: $model.settings.showCursor)
                     Toggle("Боковая панель справа", isOn: $model.settings.sidebarOnRight)
+                }
+                Section {
+                    PressureCurveEditor(curve: $model.settings.pressureCurve)
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Сглаживание нажатия")
+                            Spacer()
+                            Text("\(Int(model.settings.pressureSmoothing * 100))%").foregroundStyle(.secondary)
+                        }
+                        Slider(value: $model.settings.pressureSmoothing, in: 0...0.9)
+                    }
+                } header: {
+                    Text("Нажатие и сглаживание")
+                } footer: {
+                    Text("Как в Procreate: Настройки → Нажатие и сглаживание. Кривая применяется ко всем кистям.")
+                }
+                Section {
+                    Toggle("QuickShape", isOn: $model.settings.quickShape)
+                    if model.settings.quickShape {
+                        VStack(alignment: .leading) {
+                            HStack {
+                                Text("Задержка удержания")
+                                Spacer()
+                                Text(String(format: "%.2f с", model.settings.quickShapeDelay)).foregroundStyle(.secondary)
+                            }
+                            Slider(value: $model.settings.quickShapeDelay, in: 0.25...1.5)
+                        }
+                    }
+                } header: {
+                    Text("Жесты")
+                } footer: {
+                    Text("Закончи штрих и задержи Pencil — линия станет прямой, замкнутый контур — эллипсом.")
+                }
+                Section("Вьюпорт") {
+                    Picker("HDRI", selection: $model.settings.hdri) {
+                        ForEach(BlenderHDRI.allCases) { Text($0.title).tag($0) }
+                    }
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("Яркость мира")
+                            Spacer()
+                            Text("\(Int(model.settings.envStrength * 100))%").foregroundStyle(.secondary)
+                        }
+                        Slider(value: $model.settings.envStrength, in: 0.2...3)
+                    }
+                    Toggle("Сетка пола", isOn: $model.settings.showGrid)
+                    Toggle("Оси X / Y", isOn: $model.settings.showAxes)
+                    Toggle("Навигационный гизмо", isOn: $model.settings.showGizmo)
                 }
                 Section("3D-рисование") {
                     Toggle("Не красить сквозь меш (окклюзия)", isOn: $model.settings.occlusion)
