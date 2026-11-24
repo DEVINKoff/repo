@@ -139,6 +139,7 @@ struct CanvasTransform {
 final class AppModel {
     @ObservationIgnored let engine: Engine
     @ObservationIgnored let client = BlenderClient()
+    let updater = Updater()
     @ObservationIgnored weak var modelView: ModelMTKView?
     @ObservationIgnored weak var canvasView: CanvasMTKView?
     @ObservationIgnored var canvasTransform = CanvasTransform()
@@ -218,6 +219,16 @@ final class AppModel {
             self?.modelView?.setNeedsDisplay()
         }
         engine.onLayersChanged = { [weak self] in self?.refreshLayers() }
+        engine.onCompileStats = { [weak self] ok, failed, pending in
+            guard let self else { return }
+            self.shaderStats = (ok, failed, pending)
+            self.updateSceneStatus()
+        }
+        engine.onCompileError = { [weak self] err in
+            guard let self, !self.shownCompileError else { return }
+            self.shownCompileError = true
+            self.toast("Шейдер не скомпилировался (лог в Файлы → BlendPaint → ShaderLogs): \(err)", level: "error")
+        }
         engine.tileSender = { [weak self] rects, payload in
             guard let self, let s = self.session else { return }
             self.client.send(["type": "tiles", "sessionId": s.id, "rects": rects], payload: payload)
@@ -231,6 +242,7 @@ final class AppModel {
         if settings.autoConnect, let h = lastHost, !h.isEmpty {
             connect(h)
         }
+        updater.check()
     }
 
     // MARK: - persistence
@@ -535,6 +547,15 @@ final class AppModel {
                     if h.count > 1 { self.toast("Сцена: \(h.count) объектов — тапни деталь, чтобы рисовать на ней") }
                 }
             }
+        case "template":
+            struct TH: Decodable { let abi: Int; let text: String }
+            if let t = try? dec.decode(TH.self, from: hdr) {
+                DispatchQueue.main.async {
+                    if self.engine.setTemplateOverride(t.text, abi: t.abi) {
+                        self.applyProgram()
+                    }
+                }
+            }
         case "no_texture":
             if let n = try? dec.decode(NoTextureHeader.self, from: hdr) {
                 DispatchQueue.main.async {
@@ -672,6 +693,8 @@ final class AppModel {
     var noTextureObject: String?
     var sceneStatus = ""
 
+    @ObservationIgnored private var shaderStats = (0, 0, 0)
+    @ObservationIgnored private var shownCompileError = false
     @ObservationIgnored private var sceneMaterials = 0
     @ObservationIgnored private var sceneMaterialsReady = 0
     @ObservationIgnored private var sceneExpected = 0
@@ -680,7 +703,9 @@ final class AppModel {
     private func updateSceneStatus() {
         var parts: [String] = []
         if sceneLoading { parts.append("Детали \(sceneObjects.count)/\(sceneExpected)") }
-        if sceneMaterialsReady < sceneMaterials { parts.append("материалы \(sceneMaterialsReady)/\(sceneMaterials)") }
+        if shaderStats.2 > 0 {
+            parts.append("шейдеры: готово \(shaderStats.0), компилируется \(shaderStats.2)" + (shaderStats.1 > 0 ? ", ошибок \(shaderStats.1)" : ""))
+        }
         sceneStatus = parts.joined(separator: " · ")
     }
 

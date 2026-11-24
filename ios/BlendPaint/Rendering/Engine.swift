@@ -743,41 +743,106 @@ final class Engine {
     private var pipelineCache: [String: MTLRenderPipelineState] = [:]
     private var pipelineWaiters: [String: [(MTLRenderPipelineState?, String?) -> Void]] = [:]
 
+    private var pipelineFailures: [String: String] = [:]
+    private let compileQueue = DispatchQueue(label: "blendpaint.compile", qos: .userInitiated, attributes: .concurrent)
+    private let compileSlots = DispatchSemaphore(value: 2)
+    static let templateABI = 2
+    private lazy var bundledTemplate: String? = {
+        guard let url = Bundle.main.url(forResource: "MaterialTemplate", withExtension: "txt") else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }()
+    /// newer template sent by the Blender add-on (shader fixes without reinstalling the app)
+    private var templateOverride: String?
+    private var templateSource: String? { templateOverride ?? bundledTemplate }
+
+    /// returns true when accepted
+    func setTemplateOverride(_ text: String, abi: Int) -> Bool {
+        guard abi == Engine.templateABI, text.contains("//@@MATERIAL@@"), text != templateOverride else { return false }
+        templateOverride = text
+        pipelineCache.removeAll()
+        pipelineFailures.removeAll()
+        return true
+    }
+    /// (unique shaders compiled ok, failed, still compiling)
+    var onCompileStats: ((Int, Int, Int) -> Void)?
+    var onCompileError: ((String) -> Void)?
+
+    private func reportCompileStats() {
+        onCompileStats?(pipelineCache.count, pipelineFailures.count, pipelineWaiters.count)
+    }
+
+    private func finishCompile(_ key: String, _ pipe: MTLRenderPipelineState?, _ err: String?) {
+        if let pipe { pipelineCache[key] = pipe } else if pipelineCache[key] == nil { pipelineFailures[key] = err ?? "failed" }
+        let waiters = pipelineWaiters[key] ?? []
+        pipelineWaiters[key] = nil
+        for w in waiters { w(pipe, pipe == nil ? (err ?? "failed") : nil) }
+        reportCompileStats()
+    }
+
     private func compileProgram(_ p: MaterialProgram, done: @escaping (MTLRenderPipelineState?, String?) -> Void) {
-        let key = "\((p.alpha ?? true) ? 1 : 0)|" + p.code
+        let key = "\(templateSource?.hashValue ?? 0)|\((p.alpha ?? true) ? 1 : 0)|" + p.code
         if let c = pipelineCache[key] { done(c, nil); return }
+        if let e = pipelineFailures[key] { done(nil, e); return }          // never retry a broken shader
         if pipelineWaiters[key] != nil { pipelineWaiters[key]!.append(done); return }
         pipelineWaiters[key] = [done]
-        guard let url = Bundle.main.url(forResource: "MaterialTemplate", withExtension: "txt"),
-              let template = try? String(contentsOf: url, encoding: .utf8) else {
-            pipelineWaiters[key] = nil
-            done(nil, "MaterialTemplate.txt не найден в приложении")
+        reportCompileStats()
+        guard let template = templateSource else {
+            finishCompile(key, nil, "MaterialTemplate.txt не найден в приложении")
             return
         }
         let source = "#define BP_ALPHA \((p.alpha ?? true) ? 1 : 0)\n" + template.replacingOccurrences(of: "//@@MATERIAL@@", with: p.code)
-        device.makeLibrary(source: source, options: nil) { [weak self] lib, error in
+        // watchdog: never let one shader block the UI state forever
+        DispatchQueue.main.asyncAfter(deadline: .now() + 40) { [weak self] in
+            guard let self, self.pipelineWaiters[key] != nil else { return }
+            self.finishCompile(key, nil, "timeout (40 s)")
+        }
+        let device = self.device
+        compileQueue.async { [weak self] in
+            self?.compileSlots.wait()
             var pipe: MTLRenderPipelineState?
             var err: String?
-            if let lib, let s = self {
+            let opts = MTLCompileOptions()
+            opts.optimizationLevel = .size
+            opts.mathMode = .fast
+            do {
+                let lib = try device.makeLibrary(source: source, options: opts)
                 let d = MTLRenderPipelineDescriptor()
                 d.vertexFunction = lib.makeFunction(name: "matVertex")
                 d.fragmentFunction = lib.makeFunction(name: "matFragment")
                 d.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
                 d.colorAttachments[1].pixelFormat = .rgba32Float
                 d.depthAttachmentPixelFormat = .depth32Float
-                do { pipe = try s.device.makeRenderPipelineState(descriptor: d) } catch { err = error.localizedDescription }
-            } else {
-                err = error?.localizedDescription ?? "compile failed"
+                pipe = try device.makeRenderPipelineState(descriptor: d)
+            } catch {
+                err = error.localizedDescription
+            }
+            self?.compileSlots.signal()
+            if pipe == nil {
+                Engine.writeShaderLog(source: source, error: err ?? "unknown")
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let pipe { self.pipelineCache[key] = pipe }
-                if pipe == nil { print("Material compile error:\n\(err ?? "")") }
-                let waiters = self.pipelineWaiters[key] ?? []
-                self.pipelineWaiters[key] = nil
-                for w in waiters { w(pipe, pipe == nil ? String((err ?? "").prefix(300)) : nil) }
+                if self.pipelineWaiters[key] == nil {
+                    // finished after the watchdog fired: still cache a success for later draws
+                    if let pipe { self.pipelineCache[key] = pipe; self.pipelineFailures[key] = nil; self.requestRedraw() }
+                    self.reportCompileStats()
+                    return
+                }
+                if pipe == nil {
+                    self.onCompileError?(String((err ?? "").prefix(400)))
+                }
+                self.finishCompile(key, pipe, err.map { String($0.prefix(400)) })
             }
         }
+    }
+
+    static func writeShaderLog(source: String, error: String) {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ShaderLogs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = String(format: "shader_%08x.metal", UInt32(truncatingIfNeeded: source.hashValue))
+        let text = "/* COMPILE ERROR:\n" + error.replacingOccurrences(of: "*/", with: "* /") + "\n*/\n" + source
+        try? text.write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
     }
 
     /// Compiles the paint object's translated material. `done` gets nil on success or an error text.

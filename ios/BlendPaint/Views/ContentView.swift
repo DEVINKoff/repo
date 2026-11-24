@@ -62,6 +62,10 @@ struct ContentView: View {
             }
 
             VStack(spacing: 10) {
+                if model.updater.hasUpdate {
+                    UpdateBanner(updater: model.updater)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
                 if let n = model.noTextureObject {
                     NoTextureBanner(model: model, name: n)
                         .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.9)))
@@ -227,6 +231,38 @@ struct EmptyStateCard: View {
                 .glassEffect(.regular.tint(.orange.opacity(0.5)), in: .circle)
             Text(text).font(.callout).foregroundStyle(.secondary)
         }
+    }
+}
+
+struct UpdateBanner: View {
+    @Bindable var updater: Updater
+    @Environment(\.openURL) var openURL
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.down.app.fill").font(.title3).foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Доступна сборка \(updater.latestBuild ?? 0)").font(.headline)
+                Text("У тебя \(updater.currentBuild)").font(.caption).foregroundStyle(.secondary)
+            }
+            Menu {
+                if let u = Updater.sideStoreURL() { Button("Добавить источник в SideStore") { openURL(u) } }
+                if let u = Updater.altStoreURL() { Button("Добавить источник в AltStore") { openURL(u) } }
+                Button("Скопировать URL источника") { UIPasteboard.general.string = Updater.sourceURL }
+                if let ipa = updater.ipaURL { Button("Скачать IPA") { openURL(ipa) } }
+                Button("Страница релиза") { openURL(Updater.releasesPage) }
+            } label: {
+                Text("Обновить")
+            }
+            .buttonStyle(.glassProminent)
+            Button {
+                withAnimation { updater.dismissed = true }
+            } label: { Image(systemName: "xmark") }
+            .buttonStyle(.glass)
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .glassEffect(.regular, in: .capsule)
     }
 }
 

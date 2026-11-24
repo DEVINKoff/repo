@@ -19,6 +19,7 @@ from bpy.app.handlers import persistent
 
 from . import export
 from . import shadergen
+from . import updater
 from .server import BridgeServer, DEFAULT_PORT, PROTOCOL_VERSION, local_ips
 
 
@@ -76,7 +77,10 @@ def _tag_redraw():
 
 def _on_connect(client):
     client.send({"type": "hello", "server": "BlendPaint Bridge", "version": PROTOCOL_VERSION,
-                 "blender": bpy.app.version_string})
+                 "blender": bpy.app.version_string, "build": updater.current_build()})
+    text, abi = updater.template_text()
+    if text:
+        client.send({"type": "template", "abi": abi, "text": text})
     S.inbox.put(({"type": "_connected"}, b""))
 
 
@@ -494,6 +498,8 @@ def _pump():
                 _create_texture(header.get("name", ""), int(header.get("size", 2048)))
             elif t == "save_image":
                 _save_image()
+            elif t == "_redraw":
+                _tag_redraw()
             elif t == "set_follow":
                 _wm_props().follow_selection = bool(header.get("value", True))
     except queue.Empty:
@@ -580,6 +586,8 @@ class BLENDPAINT_Prefs(bpy.types.AddonPreferences):
     bl_idname = __package__
     port: bpy.props.IntProperty(name="Port", default=DEFAULT_PORT, min=1024, max=65535)
     auto_start: bpy.props.BoolProperty(name="Start server with Blender", default=True)
+    auto_update: bpy.props.BoolProperty(name="Update automatically", default=True,
+                                        description="Check GitHub for a new add-on build when Blender starts")
     flush_interval: bpy.props.FloatProperty(
         name="Min update interval (s)", default=0.06, min=0.0, max=1.0,
         description="How often painted pixels are pushed into the Blender image")
@@ -589,6 +597,11 @@ class BLENDPAINT_Prefs(bpy.types.AddonPreferences):
         c.prop(self, "port")
         c.prop(self, "auto_start")
         c.prop(self, "flush_interval")
+        c.prop(self, "auto_update")
+        c.label(text="Build %d. %s" % (updater.current_build(), updater.State.message))
+        r = c.row()
+        r.operator("blendpaint.update", icon='URL')
+        r.operator("blendpaint.reload", icon='FILE_REFRESH')
 
 
 class BLENDPAINT_OT_server(bpy.types.Operator):
@@ -624,6 +637,38 @@ class BLENDPAINT_OT_send_scene(bpy.types.Operator):
     def execute(self, context):
         if not send_scene():
             self.report({'WARNING'}, "Nothing sent (iPad not connected or no meshes)")
+        return {'FINISHED'}
+
+
+class BLENDPAINT_OT_update(bpy.types.Operator):
+    bl_idname = "blendpaint.update"
+    bl_label = "Check for Updates"
+    bl_description = "Download and install the newest BlendPaint add-on build from GitHub"
+
+    def execute(self, context):
+        updater.check_and_install(install=True, done=lambda: S.inbox.put(({"type": "_redraw"}, b"")))
+        self.report({'INFO'}, "Checking for updates…")
+        return {'FINISHED'}
+
+
+class BLENDPAINT_OT_reload(bpy.types.Operator):
+    bl_idname = "blendpaint.reload"
+    bl_label = "Reload Add-on"
+    bl_description = "Reload the add-on code after an update (no Blender restart needed)"
+
+    def execute(self, context):
+        import importlib
+        import sys
+        pkg = __package__
+        stop_server()
+        try:
+            bpy.ops.preferences.addon_disable(module=pkg)
+            for name in [m for m in list(sys.modules) if m == pkg or m.startswith(pkg + ".")]:
+                del sys.modules[name]
+            bpy.ops.preferences.addon_enable(module=pkg)
+        except Exception as e:  # noqa
+            self.report({'ERROR'}, "Reload failed (%s) — restart Blender" % e)
+            return {'CANCELLED'}
         return {'FINISHED'}
 
 
@@ -744,6 +789,14 @@ def _draw_panel(layout, context):
     col2.operator("blendpaint.send_scene", icon='SCENE_DATA')
     layout.operator("blendpaint.new_texture", icon='ADD')
     layout.operator("blendpaint.debug_material", icon='COPYDOWN')
+    up = layout.box()
+    up.label(text="Add-on build %d" % updater.current_build(), icon='INFO')
+    if updater.State.message:
+        up.label(text=updater.State.message)
+    r = up.row(align=True)
+    r.operator("blendpaint.update", text="Update", icon='URL')
+    if updater.State.updated_to:
+        r.operator("blendpaint.reload", text="Reload", icon='FILE_REFRESH')
 
 
 class BLENDPAINT_PT_node(bpy.types.Panel):
@@ -770,7 +823,7 @@ class BLENDPAINT_PT_view3d(bpy.types.Panel):
         _draw_panel(self.layout, context)
 
 
-classes = (BLENDPAINT_Props, BLENDPAINT_Prefs, BLENDPAINT_OT_server, BLENDPAINT_OT_send, BLENDPAINT_OT_send_scene, BLENDPAINT_OT_debug_material,
+classes = (BLENDPAINT_Props, BLENDPAINT_Prefs, BLENDPAINT_OT_server, BLENDPAINT_OT_send, BLENDPAINT_OT_send_scene, BLENDPAINT_OT_debug_material, BLENDPAINT_OT_update, BLENDPAINT_OT_reload,
            BLENDPAINT_OT_new_texture, BLENDPAINT_PT_node, BLENDPAINT_PT_view3d)
 
 
@@ -778,6 +831,9 @@ def _deferred_start():
     p = _prefs()
     if p is None or p.auto_start:
         start_server()
+    online = getattr(bpy.app, "online_access", True)
+    if online and (p is None or p.auto_update):
+        updater.check_and_install(install=True, done=lambda: S.inbox.put(({"type": "_redraw"}, b"")))
     return None
 
 

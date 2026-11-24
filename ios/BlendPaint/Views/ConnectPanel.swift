@@ -158,6 +158,14 @@ struct SettingsPanel: View {
                         Slider(value: $model.settings.wireOpacity, in: 0.05...1)
                     }
                 }
+                Section("Обновления") {
+                    LabeledContent("Сборка", value: "\(model.updater.currentBuild)")
+                    Text("Добавь источник один раз — SideStore/AltStore будут обновлять приложение сами:")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Text(Updater.sourceURL).font(.caption.monospaced()).textSelection(.enabled)
+                    Button("Скопировать URL источника") { UIPasteboard.general.string = Updater.sourceURL }
+                    Button("Проверить обновления") { model.updater.dismissed = false; model.updater.check() }
+                }
                 Section("Жесты") {
                     gesture("hand.tap", "2 пальца — отменить, 3 пальца — повторить")
                     gesture("hand.raised", "4 пальца — скрыть/показать интерфейс")

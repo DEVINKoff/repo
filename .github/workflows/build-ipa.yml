@@ -5,6 +5,12 @@ on:
     branches: [ main, master, blendpaint ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
+env:
+  BUILD: ${{ github.run_number }}
+
 jobs:
   ipa:
     runs-on: macos-26
@@ -42,6 +48,7 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
+            MARKETING_VERSION=1.0.$BUILD CURRENT_PROJECT_VERSION=$BUILD \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD|\*\*" || true
           test -d build/Build/Products/Release-iphoneos/BlendPaint.app
@@ -68,6 +75,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp build + bundle the material template
+        run: |
+          echo "$BUILD" > blender_addon/blendpaint_bridge/build.txt
+          cp ios/BlendPaint/Resources/MaterialTemplate.txt blender_addon/blendpaint_bridge/material_template.txt
+          sed -i "s/^version = .*/version = \"1.0.$BUILD\"/" blender_addon/blendpaint_bridge/blender_manifest.toml
+          sed -i "s/\"version\": (1, 0, [0-9]*)/\"version\": (1, 0, $BUILD)/" blender_addon/blendpaint_bridge/__init__.py
       - name: Zip add-on
         working-directory: blender_addon
         run: zip -r ../blendpaint_bridge.zip blendpaint_bridge -x "*/__pycache__/*"
@@ -75,3 +88,61 @@ jobs:
         with:
           name: blendpaint_bridge-addon
           path: blendpaint_bridge.zip
+
+  release:
+    needs: [ipa, addon]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/blendpaint'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: AltStore / SideStore source
+        run: |
+          IPA=art/BlendPaint-unsigned-ipa/BlendPaint-unsigned.ipa
+          cp "$IPA" BlendPaint.ipa
+          cp art/blendpaint_bridge-addon/blendpaint_bridge.zip blendpaint_bridge.zip
+          SIZE=$(stat -c %s BlendPaint.ipa)
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/blendpaint-$BUILD/BlendPaint.ipa"
+          ICON="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/blendpaint/ios/BlendPaint/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+          cat > altstore-source.json <<JSON
+          {
+            "name": "BlendPaint",
+            "identifier": "com.devink.blendpaint.source",
+            "subtitle": "Procreate-style texture painting for Blender",
+            "iconURL": "$ICON",
+            "apps": [{
+              "name": "BlendPaint",
+              "bundleIdentifier": "com.devink.blendpaint",
+              "developerName": "DEVINK",
+              "subtitle": "Paint Blender textures on iPad",
+              "localizedDescription": "Live texture painting for Blender with Apple Pencil.",
+              "iconURL": "$ICON",
+              "tintColor": "FF8F2E",
+              "version": "1.0.$BUILD",
+              "versionDate": "$DATE",
+              "downloadURL": "$URL",
+              "size": $SIZE,
+              "versions": [{
+                "version": "1.0.$BUILD",
+                "buildVersion": "$BUILD",
+                "date": "$DATE",
+                "downloadURL": "$URL",
+                "size": $SIZE,
+                "minOSVersion": "26.0"
+              }],
+              "appPermissions": { "entitlements": [], "privacy": {} }
+            }],
+            "news": []
+          }
+          JSON
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          printf 'Build %s\n\n%s\n' "$BUILD" "$NOTES" > notes.md
+          gh release create "blendpaint-$BUILD" BlendPaint.ipa blendpaint_bridge.zip altstore-source.json \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "BlendPaint build $BUILD" --notes-file notes.md
