@@ -11,7 +11,7 @@ struct GPUDab {
     var roundness: Float
     var alpha: Float
     var seed: Float
-    var pad: Float = 0
+    var flow: Float = 1
 }
 
 struct DabUniforms {

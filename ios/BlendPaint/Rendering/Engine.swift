@@ -293,8 +293,8 @@ final class Engine {
     }
 
     private func buildPipelines() throws {
-        dabPipeline = try renderPipe("dabVertex", "dabFragment", [.r16Float], blend: 1)
-        projPipeline = try renderPipe("projVertex", "projFragment", [.r16Float], blend: 1)
+        dabPipeline = try renderPipe("dabVertex", "dabFragment", [.r16Float])
+        projPipeline = try renderPipe("projVertex", "projFragment", [.r16Float])
         uvMaskPipeline = try renderPipe("uvMaskVertex", "uvMaskFragment", [.r8Unorm])
         compositePipeline = try renderPipe("fullscreenVertex", "compositeFragment", [.rgba8Unorm])
         mergePipeline = try renderPipe("fullscreenVertex", "mergeFragment", [.rgba8Unorm])
@@ -317,8 +317,8 @@ final class Engine {
     }
 
     func makeTexture(_ fmt: MTLPixelFormat, _ w: Int, _ h: Int, _ usage: MTLTextureUsage,
-                     storage: MTLStorageMode = .private) -> MTLTexture? {
-        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: max(w, 1), height: max(h, 1), mipmapped: false)
+                     storage: MTLStorageMode = .private, mipmapped: Bool = false) -> MTLTexture? {
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: fmt, width: max(w, 1), height: max(h, 1), mipmapped: mipmapped)
         d.usage = usage
         d.storageMode = storage
         return device.makeTexture(descriptor: d)
@@ -373,7 +373,7 @@ final class Engine {
         tilesX = (w + kTileSize - 1) / kTileSize
         tilesY = (h + kTileSize - 1) / kTileSize
         composite = makeTexture(.rgba8Unorm, w, h, [.renderTarget, .shaderRead])
-        exportTex = makeTexture(.rgba8Unorm, w, h, [.shaderRead, .shaderWrite, .pixelFormatView])
+        exportTex = makeTexture(.rgba8Unorm, w, h, [.shaderRead, .shaderWrite, .pixelFormatView], mipmapped: true)
         exportSRGB = exportTex?.makeTextureView(pixelFormat: .rgba8Unorm_srgb)
         stroke = makeTexture(.r16Float, w, h, [.renderTarget, .shaderRead, .shaderWrite])
         strokeTemp = makeTexture(.r16Float, w, h, [.shaderRead, .shaderWrite])
@@ -505,9 +505,13 @@ final class Engine {
     }
 
     func addExtraTexture(name: String, width w: Int, height h: Int, straightRGBA: Data, colorspace: String) {
-        guard let t = makeTexture(.rgba8Unorm, w, h, [.shaderRead, .pixelFormatView]),
+        guard let t = makeTexture(.rgba8Unorm, w, h, [.shaderRead, .pixelFormatView], mipmapped: true),
               let cmd = queue.makeCommandBuffer() else { return }
         uploadRaw(cmd, straightRGBA, into: t)
+        if let blit = cmd.makeBlitCommandEncoder() {
+            blit.generateMipmaps(for: t)
+            blit.endEncoding()
+        }
         cmd.commit()
         let srgb = t.makeTextureView(pixelFormat: .rgba8Unorm_srgb) ?? t
         extraTextures[name] = (t, srgb, colorspace == "Non-Color" || colorspace.lowercased().contains("raw"))
@@ -742,6 +746,10 @@ final class Engine {
         ce.setBytes(&rect, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 0)
         ce.dispatchThreads(MTLSize(width: rw, height: rh, depth: 1), threadsPerThreadgroup: MTLSize(width: 16, height: 16, depth: 1))
         ce.endEncoding()
+        if exportTex.mipmapLevelCount > 1, let blit = cmd.makeBlitCommandEncoder() {
+            blit.generateMipmaps(for: exportTex)
+            blit.endEncoding()
+        }
     }
 
     // MARK: - strokes

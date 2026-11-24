@@ -67,7 +67,7 @@ struct SessionInfo: Equatable {
 
 struct AppSettings: Codable, Equatable {
     var fingerPainting = false
-    var pressureGamma: Double = 1.0
+    var pressureGamma: Double = 0.65
     var occlusion = true
     var paintBackfaces = false
     var facingFade: Double = 0.15
@@ -232,13 +232,13 @@ final class AppModel {
     // MARK: - persistence
 
     private func loadSettings() {
-        if let d = UserDefaults.standard.data(forKey: "settings.v1"), let s = try? JSONDecoder().decode(AppSettings.self, from: d) {
+        if let d = UserDefaults.standard.data(forKey: "settings.v2"), let s = try? JSONDecoder().decode(AppSettings.self, from: d) {
             settings = s
         }
     }
 
     private func saveSettings() {
-        if let d = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(d, forKey: "settings.v1") }
+        if let d = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(d, forKey: "settings.v2") }
     }
 
     private func applySettings() {

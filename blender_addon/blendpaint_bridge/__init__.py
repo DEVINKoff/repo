@@ -128,7 +128,7 @@ def _start_session(target):
 
     mesh_info, mesh_parts = export.export_mesh(obj, mat)
     desc = export.material_desc(mat, img.name)
-    paint_uv = export._uv_for(node) or mesh_info["renderUV"] or (mesh_info["uvMaps"][0] if mesh_info["uvMaps"] else "")
+    paint_uv = export.paint_uv_for(desc, img.name) or export._uv_for(node) or mesh_info["renderUV"] or (mesh_info["uvMaps"][0] if mesh_info["uvMaps"] else "")
     extras = export.build_extra_blobs(export.extra_images(desc, img.name))
 
     blobs, chunks, off = [], [], 0

@@ -85,6 +85,17 @@ class PaintInputView: MTKView, UIGestureRecognizerDelegate, UIPencilInteractionD
 
     required init(coder: NSCoder) { fatalError() }
 
+    // render at the full Retina resolution (CAMetalLayer-backed views default to 1×)
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        let scale = window?.screen.nativeScale ?? traitCollection.displayScale
+        if contentScaleFactor != scale {
+            contentScaleFactor = scale
+            setNeedsLayout()
+            setNeedsDisplay()
+        }
+    }
+
     func configureGestures() {
         let finger = model?.settings.fingerPainting ?? false
         pan1.isEnabled = !finger
@@ -282,11 +293,11 @@ final class CanvasMTKView: PaintInputView, MTKViewDelegate {
         e.encodeCompositeIfNeeded(cmd)
         rpd.colorAttachments[0].loadAction = .clear
         guard let enc = cmd.makeRenderCommandEncoder(descriptor: rpd) else { return }
-        if e.hasDocument, let comp = e.composite {
+        if e.hasDocument, let comp = e.exportTex {
             let zoom = m.canvasTransform.scale * contentScaleFactor
             var u = CanvasUniforms(transform: m.canvasTransform.ndcMatrix(view: bounds.size),
                                    texSize: SIMD2(Float(e.width), Float(e.height)),
-                                   checker: Float(10 * contentScaleFactor), nearest: zoom > 2.5 ? 1 : 0,
+                                   checker: Float(10 * contentScaleFactor), nearest: zoom > 6 ? 1 : 0,
                                    wireColor: SIMD4(1, 1, 1, Float(m.settings.wireOpacity)))
             enc.setRenderPipelineState(e.canvasPipeline)
             enc.setVertexBytes(&u, length: MemoryLayout<CanvasUniforms>.stride, index: 0)

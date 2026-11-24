@@ -172,7 +172,8 @@ final class StrokeBuilder {
         var r = baseRadius * (1 + (b.minSize + (1 - b.minSize) * pr - 1) * b.pressureSize)
         r *= 1 + s.tilt * b.tiltSize * 1.5
         if b.sizeJitter > 0 { r *= max(0.05, 1 + rand() * b.sizeJitter) }
-        var alpha = b.flow * (1 + (pr - 1) * b.pressureOpacity)
+        // opacity cap of this dab (pressure/tilt → opacity); flow = how fast it builds up to it
+        var alpha = 1 + (pr - 1) * b.pressureOpacity
         alpha *= 1 - s.tilt * b.tiltOpacity * 0.8
         var angle = b.angle
         switch b.angleMode {
@@ -189,7 +190,8 @@ final class StrokeBuilder {
         }
         dabCount += 1
         return GPUDab(center: c, radius: max(r, 0.35), angle: angle, roundness: max(b.roundness, 0.05),
-                      alpha: max(0, min(1, alpha)), seed: Float.random(in: 0...1, using: &rng))
+                      alpha: max(0, min(1, alpha)), seed: Float.random(in: 0...1, using: &rng),
+                      flow: max(0.005, min(1, b.flow)))
     }
 
     func add(_ raw: StrokeSample) -> [GPUDab] {

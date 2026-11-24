@@ -11,7 +11,7 @@ struct Dab {
     float roundness;
     float alpha;
     float seed;
-    float pad;
+    float flow;          // build-up speed toward alpha (1 = reach it immediately)
 };
 
 struct DabUniforms {
@@ -199,6 +199,7 @@ struct DabVOut {
     float alpha;
     float radius;
     float seed;
+    float flow;
 };
 
 vertex DabVOut dabVertex(uint vid [[vertex_id]],
@@ -218,10 +219,12 @@ vertex DabVOut dabVertex(uint vid [[vertex_id]],
     o.alpha = d.alpha;
     o.radius = d.radius;
     o.seed = d.seed;
+    o.flow = d.flow;
     return o;
 }
 
 fragment float4 dabFragment(DabVOut in [[stage_in]],
+                            float4 dst [[color(0)]],
                             constant DabUniforms& u [[buffer(1)]],
                             texture2d<float> grain [[texture(0)]],
                             device uint* flagsA [[buffer(2)]],
@@ -232,11 +235,12 @@ fragment float4 dabFragment(DabVOut in [[stage_in]],
         float g = grain.sample(gs, in.position.xy / (256.0 * max(u.grainScale, 0.05))).r;
         a *= mix(1.0, g, u.grainAmount);
     }
-    if (a <= 0.0005) {
+    float cur = dst.r;
+    if (a <= cur + 0.0005) {
         discard_fragment();
     }
     markTile(in.position.xy, u.tilesX, flagsA, flagsB);
-    return float4(a);
+    return float4(cur + (a - cur) * clamp(in.flow, 0.0, 1.0));
 }
 
 // ------------------------------------------------------------------ 3D projection dabs (UV space)
@@ -261,6 +265,7 @@ vertex ProjVOut projVertex(uint vid [[vertex_id]],
 }
 
 fragment float4 projFragment(ProjVOut in [[stage_in]],
+                             float4 dst [[color(0)]],
                              constant ProjUniforms& u [[buffer(3)]],
                              constant Dab* dabs [[buffer(4)]],
                              device uint* flagsA [[buffer(5)]],
@@ -289,7 +294,16 @@ fragment float4 projFragment(ProjVOut in [[stage_in]],
             discard_fragment();
         }
     }
-    float keep = 1.0;
+    float g = 1.0;
+    if (u.grainAmount > 0.0) {
+        constexpr sampler gs(filter::linear, address::repeat);
+        g = mix(1.0, grain.sample(gs, sp / (256.0 * max(u.grainScale, 0.05))).r, u.grainAmount);
+    }
+    if (u.facingFade > 0.0) {
+        g *= smoothstep(0.0, u.facingFade, fabs(facing));
+    }
+    float start = dst.r;
+    float cur = start;
     for (uint i = 0; i < u.dabCount; i++) {
         Dab d = dabs[i];
         float2 rel = sp - d.center;
@@ -299,21 +313,16 @@ fragment float4 projFragment(ProjVOut in [[stage_in]],
         if (dot(l, l) > 1.2) {
             continue;
         }
-        keep *= 1.0 - dabCoverage(l, d.radius, u.hardness, u.shape, d.seed) * d.alpha;
+        float t = dabCoverage(l, d.radius, u.hardness, u.shape, d.seed) * d.alpha * g;
+        if (t > cur) {
+            cur += (t - cur) * clamp(d.flow, 0.0, 1.0);
+        }
     }
-    float a = 1.0 - keep;
-    if (u.grainAmount > 0.0) {
-        constexpr sampler gs(filter::linear, address::repeat);
-        a *= mix(1.0, grain.sample(gs, sp / (256.0 * max(u.grainScale, 0.05))).r, u.grainAmount);
-    }
-    if (u.facingFade > 0.0) {
-        a *= smoothstep(0.0, u.facingFade, fabs(facing));
-    }
-    if (a <= 0.0005) {
+    if (cur <= start + 0.0005) {
         discard_fragment();
     }
     markTile(in.position.xy, u.tilesX, flagsA, flagsB);
-    return float4(a);
+    return float4(cur);
 }
 
 // UV island mask (used for seam dilation after 3D strokes)
@@ -427,12 +436,12 @@ vertex CanvasVOut canvasVertex(uint vid [[vertex_id]], constant CanvasUniforms& 
 fragment float4 canvasFragment(CanvasVOut in [[stage_in]],
                                texture2d<float> tex [[texture(0)]],
                                constant CanvasUniforms& u [[buffer(0)]]) {
-    constexpr sampler lin(filter::linear, address::clamp_to_edge);
-    constexpr sampler nea(filter::nearest, address::clamp_to_edge);
+    constexpr sampler lin(filter::linear, mip_filter::linear, address::clamp_to_edge);
+    constexpr sampler nea(mag_filter::nearest, min_filter::linear, mip_filter::linear, address::clamp_to_edge);
     float4 c = u.nearest != 0 ? tex.sample(nea, in.uv) : tex.sample(lin, in.uv);
     float2 cp = floor(in.position.xy / u.checker);
     float ch = (int(cp.x + cp.y) & 1) != 0 ? 0.78 : 0.92;
-    return float4(c.rgb + ch * (1.0 - c.a), 1.0);
+    return float4(c.rgb * c.a + ch * (1.0 - c.a), 1.0);
 }
 
 vertex float4 wireVertex(uint vid [[vertex_id]],
@@ -481,7 +490,7 @@ vertex MeshVOut meshVertex(uint vid [[vertex_id]],
 }
 
 static float4 sampleSlot(texture2d<float> t, float2 uv) {
-    constexpr sampler s(filter::linear, mip_filter::none, address::repeat);
+    constexpr sampler s(filter::linear, mip_filter::linear, address::repeat, max_anisotropy(8));
     return t.sample(s, float2(uv.x, 1.0 - uv.y));
 }
 
