@@ -1,0 +1,69 @@
+name: Build BlendPaint (unsigned IPA + Blender add-on)
+
+on:
+  push:
+    branches: [ main, master, blendpaint ]
+  workflow_dispatch: {}
+
+jobs:
+  ipa:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest Xcode 26
+        run: |
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BlendPaint.xcodeproj \
+            -scheme BlendPaint \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "error:|warning: unre|BUILD|\*\*" || true
+          test -d build/Build/Products/Release-iphoneos/BlendPaint.app
+
+      - name: Package unsigned IPA
+        working-directory: ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/BlendPaint.app Payload/
+          zip -qry BlendPaint-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlendPaint-unsigned-ipa
+          path: ios/BlendPaint-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-log
+          path: ios/build.log
+
+  addon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Zip add-on
+        working-directory: blender_addon
+        run: zip -r ../blendpaint_bridge.zip blendpaint_bridge -x "*/__pycache__/*"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blendpaint_bridge-addon
+          path: blendpaint_bridge.zip

@@ -1,0 +1,14 @@
+schema_version = "1.0.0"
+
+id = "blendpaint_bridge"
+version = "1.0.0"
+name = "BlendPaint Bridge (iPad)"
+tagline = "Live texture painting from the BlendPaint iPad app"
+maintainer = "DEVINK"
+type = "add-on"
+blender_version_min = "4.2.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Paint", "Material"]
+
+[permissions]
+network = "Listens on the local network for the BlendPaint iPad app"
